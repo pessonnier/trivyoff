@@ -594,6 +594,20 @@ spec:
   Py-CreateTarGzWithModes -PythonExe $PythonExe -SourceDir $bundleDir -OutFile $OutArchive -Work $work
 
   Log "Archive created: $OutArchive"
+  $outDir = Split-Path -Parent $OutArchive
+  $additionalFiles = @(
+    "https://epss.cyentia.com/epss_scores-current.csv.gz",
+    "https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv",
+    "https://raw.githubusercontent.com/adriens/endoflife-date-snapshots/main/data/details-with-headers.csv"
+  )
+
+  Log "Download additional CSV files -> $outDir"
+  foreach ($url in $additionalFiles) {
+    $fileName = [System.IO.Path]::GetFileName(([System.Uri]$url).AbsolutePath)
+    $destFile = Join-Path $outDir $fileName
+    Download-File -Url $url -OutFile $destFile
+  }
+
   Log "Extraction Linux: tar -xzf trivy-offline-bundle.tar.gz ; ./trivy version"
 }
 catch {
