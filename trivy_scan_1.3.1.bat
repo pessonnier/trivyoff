@@ -2,12 +2,12 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 rem ==========================================================
-rem  Trivy scan wrapper - v1.3.1 (multi-disques, 1 zip / disque)
+rem  Trivy scan wrapper - v1.3.2 (multi-disques, 1 zip / disque)
 rem  NOTE Windows: on utilise "filesystem" (pas "rootfs") pour scanner C:\ etc.
 rem ==========================================================
 
 chcp 65001 >nul
-set "VERSION=1.3.1"
+set "VERSION=1.3.2"
 
 rem --- Timestamp (YYYYMMDD_HHMMSS) sans espaces
 set "LDT="
