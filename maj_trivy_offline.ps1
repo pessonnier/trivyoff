@@ -31,7 +31,7 @@ Objectif
 
 Entrées
 - ExtraRootDir (obligatoire) : les fichiers/dossiers qu’il contient sont copiés à la RACINE de l’archive.
-- OutArchive (optionnel) : chemin du tar.gz final. Par défaut : <dossier_du_script>\trivy-offline-bundle.tar.gz
+- OutArchive (optionnel) : chemin du tar.gz final. Par défaut : <dossier_du_script>\trivy-offline-bundle_<version_trivy>_<yyyymmdd_db>.tar.gz
 - LogFile (optionnel) : log. Par défaut : <dossier_du_script>\maj_trivy_offline_yyyyMMdd_HHmmss.log
 - PythonExePath (optionnel) : chemin d’un exécutable Python à utiliser (ex: C:\Python311\python.exe). Si renseigné, il est prioritaire.
 - UsePyLauncher (switch) : force l’utilisation de py.exe (launcher Python). Le script utilise alors typiquement "py.exe -3".
@@ -147,9 +147,8 @@ elseif ($PSCommandPath) { Split-Path -Parent $PSCommandPath }
 else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 
 # --- Défauts OutArchive / LogFile ---
-if ([string]::IsNullOrWhiteSpace($OutArchive)) {
-  $OutArchive = Join-Path $ScriptDir "trivy-offline-bundle.tar.gz"
-} else {
+$OutArchiveProvided = -not [string]::IsNullOrWhiteSpace($OutArchive)
+if ($OutArchiveProvided) {
   $OutArchive = [System.IO.Path]::GetFullPath($OutArchive)
 }
 
@@ -482,6 +481,10 @@ try {
   if (-not $tag) { $tag = "latest" }
   Log "Release: $tag"
 
+  $archiveVersion = ($tag -replace '^v','')
+  if ([string]::IsNullOrWhiteSpace($archiveVersion)) { $archiveVersion = "latest" }
+  $archiveVersion = $archiveVersion -replace '[^0-9A-Za-z._-]', '_'
+
   $assets = $release.assets
   if (-not $assets) { throw "Aucun asset trouve dans la release." }
 
@@ -524,7 +527,16 @@ try {
     if ($contribDir) { Log "contrib: $($contribDir.FullName)" } else { Log "IncludeContrib: contrib/ non trouve." }
   }
 
-  Log "Preload vuln DB -> $cacheDir"
+  $vulnDbDownloadDate = Get-Date
+  $dbDateStamp = $vulnDbDownloadDate.ToString("yyyyMMdd")
+
+  if (-not $OutArchiveProvided) {
+    $defaultArchiveName = "trivy-offline-bundle_{0}_{1}.tar.gz" -f $archiveVersion, $dbDateStamp
+    $OutArchive = Join-Path $ScriptDir $defaultArchiveName
+    Log "OutArchive auto: $OutArchive"
+  }
+
+  Log "Preload vuln DB -> $cacheDir (date=$dbDateStamp)"
   Run-ExternalLogged -Label "download_db" -Exe $trivyExe.FullName -ArgList @("image","--cache-dir",$cacheDir,"--download-db-only","--quiet","--no-progress") -WorkDir $ScriptDir -Work $work
 
   Log "Preload java DB -> $cacheDir"
@@ -594,7 +606,7 @@ spec:
   Py-CreateTarGzWithModes -PythonExe $PythonExe -SourceDir $bundleDir -OutFile $OutArchive -Work $work
 
   Log "Archive created: $OutArchive"
-  Log "Extraction Linux: tar -xzf trivy-offline-bundle.tar.gz ; ./trivy version"
+  Log ("Extraction Linux: tar -xzf {0} ; ./trivy version" -f (Split-Path -Leaf $OutArchive))
 }
 catch {
   Log ("ERREUR: " + $_.Exception.Message)
