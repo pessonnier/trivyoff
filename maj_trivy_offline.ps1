@@ -41,9 +41,13 @@ Entrées
 - ChecksBundleRepository (optionnel) : repository OCI du checks bundle (défaut officiel).
 - IncludeSeedMisconfig (switch) : inclure seed-misconfig/ dans l’archive.
 - IncludeContrib (switch) : inclure contrib/ dans l’archive si détecté.
+- UseTarForArchive (switch) : crée l’archive finale avec tar.exe au lieu de Python.
+- Use7ZipForArchive (switch) : crée l’archive finale avec 7z.exe au lieu de Python.
+- UsePythonForArchive (switch) : force la création de l’archive finale via Python.
 - NoCleanupMisconfigSeed (switch) : conserve le fichier JSON de sortie misconfig dans seed-misconfig/misconfig_seed.json
   (implique l’inclusion de seed-misconfig/ dans l’archive).
 - KeepWorkDir (switch) : conserve le workdir temporaire.
+- Si aucun switch de mode d'archive n'est fourni : sélection auto dans l'ordre 7zip, tar, puis python.
 
 Sorties
 - Archive tar.gz : OutArchive
@@ -101,6 +105,18 @@ Références documentaires
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -IncludeSeedMisconfig -IncludeContrib
 
 .EXAMPLE
+# Créer l'archive finale avec tar.exe (au lieu de Python)
+.\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -UseTarForArchive
+
+.EXAMPLE
+# Créer l'archive finale avec 7z.exe (au lieu de Python)
+.\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -Use7ZipForArchive
+
+.EXAMPLE
+# Créer l'archive finale explicitement avec Python
+.\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -UsePythonForArchive
+
+.EXAMPLE
 # Conserver le JSON misconfig de seed (implique l’inclusion du seed)
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -NoCleanupMisconfigSeed
 
@@ -129,6 +145,12 @@ param(
   [switch]$IncludeSeedMisconfig,
 
   [switch]$IncludeContrib,
+
+  [switch]$UseTarForArchive,
+
+  [switch]$Use7ZipForArchive,
+
+  [switch]$UsePythonForArchive,
 
   [switch]$NoCleanupMisconfigSeed,
 
@@ -258,6 +280,21 @@ function Ensure-TarWithPermission() {
   } else {
     Log "Installation tar.exe refusee."
   }
+}
+
+function Get-TarExePath() {
+  $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+  if ($tar) { return $tar.Source }
+  return $null
+}
+
+function Get-7ZipExePath() {
+  $names = @("7z.exe","7za.exe")
+  foreach ($name in $names) {
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+  }
+  return $null
 }
 
 function Escape-WinArg([string]$s) {
@@ -392,6 +429,45 @@ print("OK")
   Py-RunScript -PythonExe $PythonExe -ScriptContent $script -Label "create_tgz" -Work $Work -WorkDir $Work
 }
 
+function Create-TarGzWithTar([string]$TarExe, [string]$SourceDir, [string]$OutFile, [string]$Work) {
+  if (-not $TarExe) { throw "tar.exe introuvable." }
+  $srcParent = Split-Path -Parent $SourceDir
+  $srcName = Split-Path -Leaf $SourceDir
+
+  # tar -a choisit le format d'archive en fonction de l'extension (.tar.gz ici)
+  Run-ExternalLogged -Label "create_tgz_tar" -Exe $TarExe -ArgList @(
+    "-a",
+    "-c",
+    "-f", $OutFile,
+    "-C", $srcParent,
+    $srcName
+  ) -WorkDir $srcParent -Work $Work
+}
+
+function Create-TarGzWith7Zip([string]$SevenZipExe, [string]$SourceDir, [string]$OutFile, [string]$Work) {
+  if (-not $SevenZipExe) { throw "7z.exe/7za.exe introuvable." }
+  $srcParent = Split-Path -Parent $SourceDir
+  $srcName = Split-Path -Leaf $SourceDir
+  $tmpTar = Join-Path $Work ("bundle_{0}.tar" -f ([Guid]::NewGuid().ToString("N")))
+  try {
+    Run-ExternalLogged -Label "create_tar_7zip" -Exe $SevenZipExe -ArgList @(
+      "a",
+      "-ttar",
+      $tmpTar,
+      $srcName
+    ) -WorkDir $srcParent -Work $Work
+
+    Run-ExternalLogged -Label "create_tgz_7zip" -Exe $SevenZipExe -ArgList @(
+      "a",
+      "-tgzip",
+      $OutFile,
+      $tmpTar
+    ) -WorkDir $Work -Work $Work
+  } finally {
+    Remove-Item -LiteralPath $tmpTar -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Add-ExtraRootContent([string]$FromDir, [string]$ToDir) {
   $items = Get-ChildItem -Force -LiteralPath $FromDir
   foreach ($it in $items) {
@@ -431,6 +507,34 @@ try {
   Run-ExternalLogged -Label "python_version" -Exe $PythonExe -ArgList $pyVerArgs -WorkDir $ScriptDir -Work $env:TEMP
 
   Ensure-TarWithPermission
+  $tarExe = Get-TarExePath
+  $sevenZipExe = Get-7ZipExePath
+
+  $archiveModeSwitchCount = 0
+  if ($Use7ZipForArchive) { $archiveModeSwitchCount++ }
+  if ($UseTarForArchive) { $archiveModeSwitchCount++ }
+  if ($UsePythonForArchive) { $archiveModeSwitchCount++ }
+  if ($archiveModeSwitchCount -gt 1) {
+    throw "Use7ZipForArchive, UseTarForArchive et UsePythonForArchive sont mutuellement exclusifs."
+  }
+
+  $archiveMode = "python"
+  if ($Use7ZipForArchive) {
+    $archiveMode = "7zip"
+  } elseif ($UseTarForArchive) {
+    $archiveMode = "tar"
+  } elseif ($UsePythonForArchive) {
+    $archiveMode = "python"
+  } else {
+    if ($sevenZipExe) {
+      $archiveMode = "7zip"
+    } elseif ($tarExe) {
+      $archiveMode = "tar"
+    } else {
+      $archiveMode = "python"
+    }
+    Log "Archive mode auto-selected: $archiveMode (ordre: 7zip > tar > python)"
+  }
 
   $IncludeSeedEffective = $IncludeSeedMisconfig -or $NoCleanupMisconfigSeed
   if ($NoCleanupMisconfigSeed -and -not $IncludeSeedMisconfig) {
@@ -604,8 +708,29 @@ spec:
   Get-ChildItem -LiteralPath $bundleDir -Force | ForEach-Object { Log ("  - " + $_.Name) }
 
   New-Dir (Split-Path -Parent $OutArchive)
-  Log "Create tar.gz via Python only -> $OutArchive"
-  Py-CreateTarGzWithModes -PythonExe $PythonExe -SourceDir $bundleDir -OutFile $OutArchive -Work $work
+  switch ($archiveMode) {
+    "7zip" {
+      if (-not $sevenZipExe) {
+        throw "Mode 7zip selectionne mais 7z.exe/7za.exe est introuvable."
+      }
+      Log "Create tar.gz via 7z.exe -> $OutArchive"
+      Create-TarGzWith7Zip -SevenZipExe $sevenZipExe -SourceDir $bundleDir -OutFile $OutArchive -Work $work
+      break
+    }
+    "tar" {
+      if (-not $tarExe) {
+        throw "Mode tar selectionne mais tar.exe est introuvable."
+      }
+      Log "Create tar.gz via tar.exe -> $OutArchive"
+      Create-TarGzWithTar -TarExe $tarExe -SourceDir $bundleDir -OutFile $OutArchive -Work $work
+      break
+    }
+    default {
+      Log "Create tar.gz via Python only -> $OutArchive"
+      Py-CreateTarGzWithModes -PythonExe $PythonExe -SourceDir $bundleDir -OutFile $OutArchive -Work $work
+      break
+    }
+  }
 
   Log "Archive created: $OutArchive"
   Log ("Extraction Linux: tar -xzf {0} ; ./trivy version" -f (Split-Path -Leaf $OutArchive))

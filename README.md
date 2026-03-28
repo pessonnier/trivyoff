@@ -46,6 +46,15 @@ Script : `maj_trivy_offline.ps1`
 
 # Inclure seed-misconfig et contrib
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\trivy\extra" -IncludeSeedMisconfig -IncludeContrib
+
+# Créer l'archive avec tar.exe plutôt qu'avec Python
+.\maj_trivy_offline.ps1 -ExtraRootDir "D:\trivy\extra" -UseTarForArchive
+
+# Créer l'archive avec 7z.exe plutôt qu'avec Python
+.\maj_trivy_offline.ps1 -ExtraRootDir "D:\trivy\extra" -Use7ZipForArchive
+
+# Forcer explicitement l'archive via Python
+.\maj_trivy_offline.ps1 -ExtraRootDir "D:\trivy\extra" -UsePythonForArchive
 ```
 
 ### Paramètres principaux
@@ -54,8 +63,14 @@ Script : `maj_trivy_offline.ps1`
 - `-OutArchive` : chemin du `.tar.gz` final.
 - `-LogFile` : fichier de log.
 - `-PythonExePath` / `-UsePyLauncher` : sélection de l’exécutable Python.
+- `-UseTarForArchive` : génère l’archive finale avec `tar.exe` (au lieu de Python).
+- `-Use7ZipForArchive` : génère l’archive finale avec `7z.exe`/`7za.exe` (au lieu de Python).
+- `-UsePythonForArchive` : force la génération de l’archive finale avec Python.
 - `-GitHubToken` : recommandé en cas de limite API GitHub.
 - `-IncludeSeedMisconfig`, `-IncludeContrib`, `-KeepWorkDir` : options avancées.
+
+> Les switches `-UseTarForArchive`, `-Use7ZipForArchive` et `-UsePythonForArchive` sont mutuellement exclusifs.  
+> Si aucun n’est fourni, le mode est choisi automatiquement dans l’ordre : **7zip**, puis **tar**, puis **python**.
 
 ## 2) Scanner en offline sous Linux
 
