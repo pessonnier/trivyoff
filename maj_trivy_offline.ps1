@@ -607,6 +607,20 @@ spec:
 
   Log "Archive created: $OutArchive"
   Log ("Extraction Linux: tar -xzf {0} ; ./trivy version" -f (Split-Path -Leaf $OutArchive))
+
+  $outDir = Split-Path -Parent $OutArchive
+  $additionalFiles = @(
+    "https://epss.cyentia.com/epss_scores-current.csv.gz",
+    "https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv",
+    "https://raw.githubusercontent.com/adriens/endoflife-date-snapshots/main/data/details-with-headers.csv"
+  )
+
+  Log "Download additional CSV files -> $outDir"
+  foreach ($url in $additionalFiles) {
+    $fileName = [System.IO.Path]::GetFileName(([System.Uri]$url).AbsolutePath)
+    $destFile = Join-Path $outDir $fileName
+    Download-File -Url $url -OutFile $destFile
+  }
 }
 catch {
   Log ("ERREUR: " + $_.Exception.Message)
