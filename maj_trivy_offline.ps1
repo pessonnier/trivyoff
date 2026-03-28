@@ -1,4 +1,6 @@
-﻿<#
+﻿$VERSION = "1.1.0"
+
+<#
 .SYNOPSIS
 maj_trivy_offline.ps1 - Construit une archive offline Trivy (tar.gz) contenant :
 - trivy.exe (Windows x64) + trivy (Linux x64)
