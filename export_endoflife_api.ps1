@@ -22,13 +22,13 @@ URL de base de l'API EndOfLife v1.
 Par défaut: https://endoflife.date/api/v1
 
 .EXAMPLE
-./export_endoflife_api_v1.ps1
+./export_endoflife_api.ps1
 
 .EXAMPLE
-./export_endoflife_api_v1.ps1 -OutputCsv "D:\tmp\endoflife_api_v1_full_export.csv"
+./export_endoflife_api.ps1 -OutputCsv "D:\tmp\endoflife_api_v1_full_export.csv"
 
 .EXAMPLE
-./export_endoflife_api_v1.ps1 -ApiBaseUrl "https://endoflife.date/api/v1" -OutputCsv "./out/eol.csv"
+./export_endoflife_api.ps1 -ApiBaseUrl "https://endoflife.date/api/v1" -OutputCsv "./out/eol.csv"
 #>
 
 [CmdletBinding()]
