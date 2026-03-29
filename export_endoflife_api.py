@@ -55,11 +55,27 @@ def _http_get_json(url: str, timeout: int = 60) -> Any:
     return json.loads(payload)
 
 
+def _extract_products_list(products_payload: Any) -> List[Any]:
+    if isinstance(products_payload, list):
+        return products_payload
+
+    if isinstance(products_payload, dict):
+        result = products_payload.get("result")
+        if isinstance(result, list):
+            return result
+
+    return []
+
+
 def _ensure_release_list(product_payload: Any) -> List[Dict[str, Any]]:
     if isinstance(product_payload, list):
         return [item for item in product_payload if isinstance(item, dict)]
 
     if isinstance(product_payload, dict):
+        result = product_payload.get("result")
+        if result is not None:
+            return _ensure_release_list(result)
+
         candidate_keys = ("releases", "cycles", "data", "result", "items")
         for key in candidate_keys:
             value = product_payload.get(key)
@@ -98,9 +114,10 @@ def export_endoflife_csv(base_url: str, output_path: Path) -> int:
     products_url = f"{base_url}/products"
 
     _log_info(f"[INFO] Récupération de la liste des produits: {products_url}")
-    products_payload = _http_get_json(products_url)
-    if not isinstance(products_payload, list):
-        raise RuntimeError("La réponse de /products n'est pas une liste JSON.")
+    raw_products_payload = _http_get_json(products_url)
+    products_payload = _extract_products_list(raw_products_payload)
+    if not products_payload:
+        raise RuntimeError("La réponse de /products ne contient aucune liste de produits exploitable.")
     _log_info(f"[INFO] {len(products_payload)} produits trouvés.")
 
     rows: List[Dict[str, str]] = []
@@ -112,7 +129,12 @@ def export_endoflife_csv(base_url: str, output_path: Path) -> int:
         if isinstance(product_item, str):
             product = product_item
         elif isinstance(product_item, dict):
-            product = str(product_item.get("slug") or product_item.get("product") or "").strip()
+            product = str(
+                product_item.get("slug")
+                or product_item.get("product")
+                or product_item.get("name")
+                or ""
+            ).strip()
         else:
             continue
 
@@ -151,7 +173,7 @@ def export_endoflife_csv(base_url: str, output_path: Path) -> int:
     fieldnames = ["product", "release_index"] + sorted(dynamic_columns)
 
     with output_path.open("w", encoding="utf-8", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction="ignore")
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction="ignore", quoting=csv.QUOTE_ALL)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -203,3 +225,4 @@ def main(argv: Iterable[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
