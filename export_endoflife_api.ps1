@@ -92,8 +92,11 @@ if (-not ($products -is [System.Array])) {
 
 $rows = New-Object System.Collections.Generic.List[object]
 $dynamicColumns = New-Object System.Collections.Generic.HashSet[string]
+$totalProducts = $products.Count
+$currentProduct = 0
 
 foreach ($productItem in $products) {
+  $currentProduct++
   $product = ""
 
   if ($productItem -is [string]) {
@@ -108,8 +111,11 @@ foreach ($productItem in $products) {
 
   $product = $product.Trim()
   if ([string]::IsNullOrWhiteSpace($product)) {
+    Write-Host ("[{0}/{1}] Produit ignoré (nom vide)." -f $currentProduct, $totalProducts)
     continue
   }
+
+  Write-Host ("[{0}/{1}] Extraction des releases pour '{2}'..." -f $currentProduct, $totalProducts, $product)
 
   $productEncoded = [uri]::EscapeDataString($product)
   $productUrl = "$ApiBaseUrl/products/$productEncoded"
