@@ -33,6 +33,10 @@ Entrées
 - ExtraRootDir (obligatoire) : les fichiers/dossiers qu’il contient sont copiés à la RACINE de l’archive.
 - OutArchive (optionnel) : chemin du tar.gz final. Par défaut : <dossier_du_script>\trivy-offline-bundle_<version_trivy>_<yyyymmdd_db>.tar.gz
 - LogFile (optionnel) : log. Par défaut : <dossier_du_script>\maj_trivy_offline_yyyyMMdd_HHmmss.log
+- DownloadDir (optionnel) : dossier de téléchargement des releases Trivy.
+  Par défaut : <dossier_courant>\Download
+- Work (optionnel) : dossier de travail utilisé pour extraction/cache/bundle.
+  Par défaut : <dossier_courant>\Work
 - PythonExePath (optionnel) : chemin d’un exécutable Python à utiliser (ex: C:\Python311\python.exe). Si renseigné, il est prioritaire.
 - UsePyLauncher (switch) : force l’utilisation de py.exe (launcher Python). Le script utilise alors typiquement "py.exe -3".
 - GitHubToken (optionnel) : token GitHub pour API/download (403/429).
@@ -150,6 +154,10 @@ param(
 
   [switch]$UsePyLauncher,
 
+  [string]$DownloadDir = "",
+
+  [string]$Work = "",
+
   [string]$GitHubToken = "",
 
   [string]$ChecksBundleRepository = "ghcr.io/aquasecurity/trivy-checks",
@@ -194,6 +202,19 @@ $script:PythonPrefixArgs = @()
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot }
 elseif ($PSCommandPath) { Split-Path -Parent $PSCommandPath }
 else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+
+$CurrentDir = (Get-Location).Path
+if ([string]::IsNullOrWhiteSpace($DownloadDir)) {
+  $DownloadDir = Join-Path $CurrentDir "Download"
+} else {
+  $DownloadDir = [System.IO.Path]::GetFullPath($DownloadDir)
+}
+
+if ([string]::IsNullOrWhiteSpace($Work)) {
+  $Work = Join-Path $CurrentDir "Work"
+} else {
+  $Work = [System.IO.Path]::GetFullPath($Work)
+}
 
 # --- Défauts OutArchive / LogFile ---
 $OutArchiveProvided = -not [string]::IsNullOrWhiteSpace($OutArchive)
@@ -806,15 +827,15 @@ try {
   }
 
   # Workdir
-  $work = Join-Path $env:TEMP ("trivy_bundle_{0}" -f ([Guid]::NewGuid().ToString("N")))
-  New-Dir $work
+  New-Dir $Work
 
-  $downloads = $ScriptDir
-  $extractW  = Join-Path $work "extract_windows"
-  $extractL  = Join-Path $work "extract_linux"
-  $cacheDir  = Join-Path $work "cache"
-  $seedDir   = Join-Path $work "seed-misconfig"
-  $bundleDir = Join-Path $work "bundle-root"
+  $downloads = $DownloadDir
+  New-Dir $downloads
+  $extractW  = Join-Path $Work "extract_windows"
+  $extractL  = Join-Path $Work "extract_linux"
+  $cacheDir  = Join-Path $Work "cache"
+  $seedDir   = Join-Path $Work "seed-misconfig"
+  $bundleDir = Join-Path $Work "bundle-root"
 
   New-Dir $extractW
   New-Dir $extractL
@@ -833,7 +854,7 @@ try {
     "IncludeContrib"         = $IncludeContrib
     "NoCleanupMisconfigSeed" = $NoCleanupMisconfigSeed
     "KeepWorkDir"            = $KeepWorkDir
-    "WorkDir"                = $work
+    "WorkDir"                = $Work
     "downloads"              = $downloads
     "extract_windows"        = $extractW
     "extract_linux"          = $extractL
@@ -869,7 +890,7 @@ try {
   $linTgz = Ensure-TrivyAsset -Asset $linAsset -DestinationDir $downloads
 
   Log ("Extraction mode: {0} (regles identiques a l'archive finale; ordre auto: 7zip > tar > python)" -f $archiveMode)
-  Expand-TrivyReleaseAssets -Mode $archiveMode -SevenZipExe $sevenZipExe -TarExe $tarExe -PythonExe $PythonExe -WinZip $winZip -LinTgz $linTgz -ExtractW $extractW -ExtractL $extractL -Work $work
+  Expand-TrivyReleaseAssets -Mode $archiveMode -SevenZipExe $sevenZipExe -TarExe $tarExe -PythonExe $PythonExe -WinZip $winZip -LinTgz $linTgz -ExtractW $extractW -ExtractL $extractL -Work $Work
 
   $trivyExe = Get-ChildItem -LiteralPath $extractW -Recurse -File -Filter "trivy.exe" | Select-Object -First 1
   if (-not $trivyExe) { throw "trivy.exe introuvable apres extraction Windows." }
@@ -880,7 +901,7 @@ try {
   if (-not $trivyLin) { throw "Binaire Linux 'trivy' introuvable apres extraction Linux." }
 
   Log "trivy.exe: $($trivyExe.FullName)"
-  Run-ExternalLogged -Label "trivy_version" -Exe $trivyExe.FullName -ArgList @("version","--quiet") -WorkDir $ScriptDir -Work $work
+  Run-ExternalLogged -Label "trivy_version" -Exe $trivyExe.FullName -ArgList @("version","--quiet") -WorkDir $ScriptDir -Work $Work
   Log "trivy (Linux): $($trivyLin.FullName)"
 
   $contribDir = $null
@@ -901,12 +922,12 @@ try {
 
   Log "Preload vuln DB -> $cacheDir (date=$dbDateStamp)"
   Invoke-WithRetry -Label "download_db" -MaxAttempts 3 -DelaySeconds 5 -Action {
-    Run-ExternalLogged -Label "download_db" -Exe $trivyExe.FullName -ArgList @("image","--cache-dir",$cacheDir,"--download-db-only","--no-progress") -WorkDir $ScriptDir -Work $work
+    Run-ExternalLogged -Label "download_db" -Exe $trivyExe.FullName -ArgList @("image","--cache-dir",$cacheDir,"--download-db-only","--no-progress") -WorkDir $ScriptDir -Work $Work
   }
 
   Log "Preload java DB -> $cacheDir"
   Invoke-WithRetry -Label "download_java_db" -MaxAttempts 3 -DelaySeconds 5 -Action {
-    Run-ExternalLogged -Label "download_java_db" -Exe $trivyExe.FullName -ArgList @("image","--cache-dir",$cacheDir,"--download-java-db-only","--no-progress") -WorkDir $ScriptDir -Work $work
+    Run-ExternalLogged -Label "download_java_db" -Exe $trivyExe.FullName -ArgList @("image","--cache-dir",$cacheDir,"--download-java-db-only","--no-progress") -WorkDir $ScriptDir -Work $Work
   }
 
   # seed-misconfig
@@ -928,7 +949,7 @@ spec:
 
   $allMisconfigScanners = "azure-arm,cloudformation,dockerfile,helm,kubernetes,terraform,terraformplan-json,terraformplan-snapshot"
 
-  $misconfOut = if ($NoCleanupMisconfigSeed) { Join-Path $seedDir "misconfig_seed.json" } else { Join-Path $work "misconfig_seed.json" }
+  $misconfOut = if ($NoCleanupMisconfigSeed) { Join-Path $seedDir "misconfig_seed.json" } else { Join-Path $Work "misconfig_seed.json" }
   Log "Preload checks bundle misconfig -> $cacheDir (JSON output: $misconfOut)"
   Run-ExternalLogged -Label "download_checks_bundle" -Exe $trivyExe.FullName -ArgList @(
     "config",
@@ -939,7 +960,7 @@ spec:
     "--output", $misconfOut,
     "--quiet",
     $seedDir
-  ) -WorkDir $ScriptDir -Work $work
+  ) -WorkDir $ScriptDir -Work $Work
 
   if (-not $NoCleanupMisconfigSeed) {
     Remove-Item -LiteralPath $misconfOut -Force -ErrorAction SilentlyContinue
@@ -975,7 +996,7 @@ spec:
         throw "Mode 7zip selectionne mais 7z.exe/7za.exe est introuvable."
       }
       Log "Create tar.gz via 7z.exe -> $OutArchive"
-      Create-TarGzWith7Zip -SevenZipExe $sevenZipExe -SourceDir $bundleDir -OutFile $OutArchive -Work $work
+      Create-TarGzWith7Zip -SevenZipExe $sevenZipExe -SourceDir $bundleDir -OutFile $OutArchive -Work $Work
       break
     }
     "tar" {
@@ -983,12 +1004,12 @@ spec:
         throw "Mode tar selectionne mais tar.exe est introuvable."
       }
       Log "Create tar.gz via tar.exe -> $OutArchive"
-      Create-TarGzWithTar -TarExe $tarExe -SourceDir $bundleDir -OutFile $OutArchive -Work $work
+      Create-TarGzWithTar -TarExe $tarExe -SourceDir $bundleDir -OutFile $OutArchive -Work $Work
       break
     }
     default {
       Log "Create tar.gz via Python only -> $OutArchive"
-      Py-CreateTarGzWithModes -PythonExe $PythonExe -SourceDir $bundleDir -OutFile $OutArchive -Work $work
+      Py-CreateTarGzWithModes -PythonExe $PythonExe -SourceDir $bundleDir -OutFile $OutArchive -Work $Work
       break
     }
   }
@@ -1033,7 +1054,7 @@ spec:
         }
         Log "Export EndOfLife API v1 via Python -> $EndOfLifeCsvPath"
         $args = @($script:PythonPrefixArgs + @($eolPyScript, "--base-url", $EndOfLifeApiBaseUrl, "--output", $EndOfLifeCsvPath))
-        Run-ExternalLogged -Label "Export endOfLife en Python" -Exe $PythonExe -Args $args -WorkDir $ScriptDir -Work $work
+        Run-ExternalLogged -Label "Export endOfLife en Python" -Exe $PythonExe -Args $args -WorkDir $ScriptDir -Work $Work
         break
       }
       default {
@@ -1047,7 +1068,7 @@ spec:
           "-File", $eolPsScript,
           "-ApiBaseUrl", $EndOfLifeApiBaseUrl,
           "-OutputCsv", $EndOfLifeCsvPath
-        ) -WorkDir $ScriptDir -Work $work
+        ) -WorkDir $ScriptDir -Work $Work
         break
       }
     }
@@ -1059,10 +1080,10 @@ catch {
 }
 finally {
   if ($KeepWorkDir) {
-    Log "Workdir kept: $work"
+    Log "Workdir kept: $Work"
   } else {
-    if ($work -and (Test-Path -LiteralPath $work)) {
-      Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    if ($Work -and (Test-Path -LiteralPath $Work)) {
+      Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
   Log ("==== end {0} ====" -f (Get-Date))
