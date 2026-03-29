@@ -97,13 +97,43 @@ function Get-ReleaseObjects {
 
   if ($Payload -is [pscustomobject] -or $Payload -is [hashtable]) {
     foreach ($k in @("releases", "cycles", "data", "result", "items")) {
-      if ($Payload.PSObject.Properties.Name -contains $k -and $Payload.$k -is [System.Array]) {
+      if ($Payload.PSObject.Properties.Name -contains $k -and $null -ne $Payload.$k -and $Payload.$k -is [System.Collections.IEnumerable] -and -not ($Payload.$k -is [string])) {
         return @($Payload.$k | Where-Object { $_ -is [pscustomobject] -or $_ -is [hashtable] })
       }
     }
   }
 
   return @()
+}
+
+function Get-ProductPayload {
+  param(
+    [Parameter(Mandatory=$true)][string]$ApiBaseUrl,
+    [Parameter(Mandatory=$true)][string]$Product
+  )
+
+  $productEncoded = [uri]::EscapeDataString($Product)
+  $candidateUrls = @(
+    "$ApiBaseUrl/products/$productEncoded",
+    "$ApiBaseUrl/products/$productEncoded/releases",
+    "$ApiBaseUrl/$productEncoded"
+  ) | Select-Object -Unique
+
+  $lastError = $null
+  foreach ($candidateUrl in $candidateUrls) {
+    try {
+      return Invoke-ApiJson -Url $candidateUrl
+    }
+    catch {
+      $lastError = $_
+    }
+  }
+
+  if ($null -ne $lastError) {
+    throw $lastError
+  }
+
+  throw ("Impossible de récupérer les releases pour '{0}'." -f $Product)
 }
 
 function Get-ProductList {
@@ -203,11 +233,8 @@ foreach ($productItem in $products) {
   Write-Progress -Activity "Export EndOfLife API" -Status ("Produit {0}/{1}: {2}" -f $currentProduct, $totalProducts, $product) -PercentComplete (($currentProduct / $totalProducts) * 100)
   Write-Host ("[{0}/{1}] [INFO] Extraction des releases pour '{2}'..." -f $currentProduct, $totalProducts, $product)
 
-  $productEncoded = [uri]::EscapeDataString($product)
-  $productUrl = "$ApiBaseUrl/products/$productEncoded"
-
   try {
-    $productPayload = Invoke-ApiJson -Url $productUrl
+    $productPayload = Get-ProductPayload -ApiBaseUrl $ApiBaseUrl -Product $product
   }
   catch {
     $details = Get-ErrorDetails -Exception $_
@@ -247,9 +274,23 @@ if (-not [string]::IsNullOrWhiteSpace($outputDir)) {
 
 $finalColumns = @("product", "release_index") + @($dynamicColumns | Sort-Object)
 
-$rows |
-  Select-Object -Property $finalColumns |
-  Export-Csv -Path $OutputCsv -NoTypeInformation -Encoding UTF8
+if ($rows.Count -gt 0) {
+  $csvLines = $rows |
+    Select-Object -Property $finalColumns |
+    ConvertTo-Csv -NoTypeInformation
+  [System.IO.File]::WriteAllLines(
+    $OutputCsv,
+    $csvLines,
+    [System.Text.UTF8Encoding]::new($true)
+  )
+}
+else {
+  [System.IO.File]::WriteAllText(
+    $OutputCsv,
+    (($finalColumns -join ",") + [Environment]::NewLine),
+    [System.Text.UTF8Encoding]::new($true)
+  )
+}
 
 if ($errors.Count -gt 0) {
   Write-Warning ("Export terminé avec {0} erreur(s) produit. Consultez les messages [ERROR] ci-dessus." -f $errors.Count)
