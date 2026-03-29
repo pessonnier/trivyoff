@@ -77,18 +77,38 @@ def _normalize_cell(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _error_details(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code} ({exc.reason})"
+    if isinstance(exc, urllib.error.URLError):
+        return f"Erreur réseau ({exc.reason})"
+    return str(exc)
+
+
+def _log_info(message: str) -> None:
+    print(message, flush=True)
+
+
+def _log_error(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
 def export_endoflife_csv(base_url: str, output_path: Path) -> int:
     base_url = base_url.rstrip("/")
     products_url = f"{base_url}/products"
 
+    _log_info(f"[INFO] Récupération de la liste des produits: {products_url}")
     products_payload = _http_get_json(products_url)
     if not isinstance(products_payload, list):
         raise RuntimeError("La réponse de /products n'est pas une liste JSON.")
+    _log_info(f"[INFO] {len(products_payload)} produits trouvés.")
 
     rows: List[Dict[str, str]] = []
     dynamic_columns: set[str] = set()
+    errors: List[str] = []
+    product_count = len(products_payload)
 
-    for product_item in products_payload:
+    for product_idx, product_item in enumerate(products_payload, start=1):
         if isinstance(product_item, str):
             product = product_item
         elif isinstance(product_item, dict):
@@ -97,13 +117,25 @@ def export_endoflife_csv(base_url: str, output_path: Path) -> int:
             continue
 
         if not product:
+            _log_info(f"[{product_idx}/{product_count}] [WARN] Produit ignoré: nom vide.")
             continue
 
         product_encoded = urllib.parse.quote(product, safe="")
         product_url = f"{base_url}/products/{product_encoded}"
-
-        product_payload = _http_get_json(product_url)
+        _log_info(f"[{product_idx}/{product_count}] [INFO] Téléchargement: {product}")
+        try:
+            product_payload = _http_get_json(product_url)
+        except Exception as exc:  # noqa: BLE001
+            details = _error_details(exc)
+            message = f"[{product_idx}/{product_count}] [ERROR] Échec pour '{product}': {details}"
+            _log_error(message)
+            errors.append(message)
+            continue
         releases = _ensure_release_list(product_payload)
+        _log_info(
+            f"[{product_idx}/{product_count}] [OK] {product}: "
+            f"{len(releases)} release(s) récupérée(s)."
+        )
 
         for index, release in enumerate(releases, start=1):
             row: Dict[str, str] = {
@@ -122,6 +154,14 @@ def export_endoflife_csv(base_url: str, output_path: Path) -> int:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
+
+    if errors:
+        _log_error(
+            f"[WARN] Export terminé avec {len(errors)} erreur(s) produit. "
+            "Voir les messages [ERROR] ci-dessus."
+        )
+    else:
+        _log_info("[INFO] Export terminé sans erreur produit.")
 
     return len(rows)
 

@@ -39,7 +39,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
+$ProgressPreference = "Continue"
 
 function Invoke-ApiJson {
   param([Parameter(Mandatory=$true)][string]$Url)
@@ -48,6 +48,20 @@ function Invoke-ApiJson {
     "User-Agent" = "export_endoflife_api_v1.ps1"
     "Accept" = "application/json"
   }
+}
+
+function Get-ErrorDetails {
+  param([Parameter(Mandatory=$true)]$Exception)
+
+  if ($Exception.Response -and $Exception.Response.StatusCode) {
+    return ("HTTP {0} ({1})" -f [int]$Exception.Response.StatusCode, $Exception.Response.StatusDescription)
+  }
+
+  if ($Exception.Exception -and $Exception.Exception.Message) {
+    return $Exception.Exception.Message
+  }
+
+  return $Exception.ToString()
 }
 
 function Convert-ToCellValue {
@@ -89,9 +103,11 @@ $products = Invoke-ApiJson -Url $productsUrl
 if (-not ($products -is [System.Array])) {
   throw "La réponse de /products n'est pas une liste JSON."
 }
+Write-Host ("[INFO] {0} produits trouvés." -f $products.Count)
 
 $rows = New-Object System.Collections.Generic.List[object]
 $dynamicColumns = New-Object System.Collections.Generic.HashSet[string]
+$errors = New-Object System.Collections.Generic.List[string]
 $totalProducts = $products.Count
 $currentProduct = 0
 
@@ -111,17 +127,28 @@ foreach ($productItem in $products) {
 
   $product = $product.Trim()
   if ([string]::IsNullOrWhiteSpace($product)) {
-    Write-Host ("[{0}/{1}] Produit ignoré (nom vide)." -f $currentProduct, $totalProducts)
+    Write-Warning ("[{0}/{1}] Produit ignoré (nom vide)." -f $currentProduct, $totalProducts)
     continue
   }
 
-  Write-Host ("[{0}/{1}] Extraction des releases pour '{2}'..." -f $currentProduct, $totalProducts, $product)
+  Write-Progress -Activity "Export EndOfLife API" -Status ("Produit {0}/{1}: {2}" -f $currentProduct, $totalProducts, $product) -PercentComplete (($currentProduct / $totalProducts) * 100)
+  Write-Host ("[{0}/{1}] [INFO] Extraction des releases pour '{2}'..." -f $currentProduct, $totalProducts, $product)
 
   $productEncoded = [uri]::EscapeDataString($product)
   $productUrl = "$ApiBaseUrl/products/$productEncoded"
 
-  $productPayload = Invoke-ApiJson -Url $productUrl
+  try {
+    $productPayload = Invoke-ApiJson -Url $productUrl
+  }
+  catch {
+    $details = Get-ErrorDetails -Exception $_
+    $message = ("[{0}/{1}] [ERROR] Echec pour '{2}': {3}" -f $currentProduct, $totalProducts, $product, $details)
+    Write-Error $message
+    $errors.Add($message) | Out-Null
+    continue
+  }
   $releases = Get-ReleaseObjects -Payload $productPayload
+  Write-Host ("[{0}/{1}] [OK] {2}: {3} release(s) récupérée(s)." -f $currentProduct, $totalProducts, $product, $releases.Count)
 
   $idx = 0
   foreach ($release in $releases) {
@@ -141,6 +168,8 @@ foreach ($productItem in $products) {
   }
 }
 
+Write-Progress -Activity "Export EndOfLife API" -Completed
+
 $outputDir = Split-Path -Parent $OutputCsv
 if (-not [string]::IsNullOrWhiteSpace($outputDir)) {
   New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
@@ -151,5 +180,11 @@ $finalColumns = @("product", "release_index") + @($dynamicColumns | Sort-Object)
 $rows |
   Select-Object -Property $finalColumns |
   Export-Csv -Path $OutputCsv -NoTypeInformation -Encoding UTF8
+
+if ($errors.Count -gt 0) {
+  Write-Warning ("Export terminé avec {0} erreur(s) produit. Consultez les messages [ERROR] ci-dessus." -f $errors.Count)
+} else {
+  Write-Host "[INFO] Export terminé sans erreur produit."
+}
 
 Write-Host "Export terminé: $OutputCsv ($($rows.Count) lignes)."
