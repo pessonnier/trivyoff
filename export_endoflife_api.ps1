@@ -120,44 +120,6 @@ function Get-ProductList {
   return @()
 }
 
-function Resolve-ProductName {
-  param($ProductItem)
-
-  if ($ProductItem -is [string]) {
-    return $ProductItem.Trim()
-  }
-
-  if ($ProductItem -is [pscustomobject] -or $ProductItem -is [hashtable]) {
-    $preferredKeys = @("slug", "product", "name", "id", "key", "cycle", "title")
-    foreach ($k in $preferredKeys) {
-      if ($ProductItem.PSObject.Properties.Name -contains $k) {
-        $candidate = $ProductItem.$k
-
-        if ($candidate -is [string]) {
-          $candidate = $candidate.Trim()
-          if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-            return $candidate
-          }
-        }
-
-        if ($candidate -is [pscustomobject] -or $candidate -is [hashtable]) {
-          foreach ($nestedKey in @("slug", "name", "id")) {
-            if ($candidate.PSObject.Properties.Name -contains $nestedKey) {
-              $nestedValue = [string]$candidate.$nestedKey
-              $nestedValue = $nestedValue.Trim()
-              if (-not [string]::IsNullOrWhiteSpace($nestedValue)) {
-                return $nestedValue
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return ""
-}
-
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 $productsUrl = "$ApiBaseUrl/products"
 
