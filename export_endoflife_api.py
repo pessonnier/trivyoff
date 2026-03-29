@@ -12,11 +12,11 @@ Prérequis
 
 Usage
 - Export par défaut dans le dossier courant:
-    python export_endoflife_api_v1.py
+    python export_endoflife_api.py
 - Export vers un chemin précis:
-    python export_endoflife_api_v1.py --output "D:/tmp/endoflife_api_v1_full_export.csv"
+    python export_endoflife_api.py --output "D:/tmp/endoflife_api_v1_full_export.csv"
 - Changer l'URL de base de l'API:
-    python export_endoflife_api_v1.py --base-url "https://endoflife.date/api/v1"
+    python export_endoflife_api.py --base-url "https://endoflife.date/api/v1"
 
 Format du CSV
 - 1 ligne par release de produit.
