@@ -31,15 +31,15 @@ Objectif
 
 Entrées
 - ExtraRootDir (optionnel) : les fichiers/dossiers qu’il contient sont copiés à la RACINE de l’archive.
-  Par défaut : <dossier_courant>\Extra
-- OutArchive (optionnel) : chemin du tar.gz final. Par défaut : <dossier_du_script>\trivy-offline-bundle_<version_trivy>_<yyyymmdd_db>.tar.gz
-- LogFile (optionnel) : log. Par défaut : <dossier_du_script>\maj_trivy_offline_yyyyMMdd_HHmmss.log
+  Par défaut : <dossier_du_script>\Extra
+- OutArchive (optionnel) : chemin du tar.gz final. Par défaut : <dossier_du_script>\Export\trivy-offline-bundle_<version_trivy>_<yyyymmdd_db>.tar.gz
+- LogFile (optionnel) : log. Par défaut : <dossier_du_script>\Work\maj_trivy_offline_yyyyMMdd_HHmmss.log
 - DownloadDir (optionnel) : dossier de téléchargement des releases Trivy.
-  Par défaut : <dossier_courant>\Download
+  Par défaut : <dossier_du_script>\Download
 - Work (optionnel) : dossier de travail utilisé pour extraction/cache/bundle.
-  Par défaut : <dossier_courant>\Work
+  Par défaut : <dossier_du_script>\Work
 - ExportDir (optionnel) : dossier de sortie pour l'archive et les exports CSV additionnels.
-  Par défaut : <dossier_courant>\Export
+  Par défaut : <dossier_du_script>\Export
 - PythonExePath (optionnel) : chemin d’un exécutable Python à utiliser (ex: C:\Python311\python.exe). Si renseigné, il est prioritaire.
 - UsePyLauncher (switch) : force l’utilisation de py.exe (launcher Python). Le script utilise alors typiquement "py.exe -3".
 - GitHubToken (optionnel) : token GitHub pour API/download (403/429).
@@ -84,7 +84,7 @@ Références documentaires
   https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_comment_based_help
 
 .EXAMPLE
-# Minimal : utilise .\Extra et écrit dans .\Export
+# Minimal : utilise <dossier_du_script>\Extra et écrit dans <dossier_du_script>\Export
 .\maj_trivy_offline.ps1
 
 .EXAMPLE
@@ -150,7 +150,7 @@ Références documentaires
 
 [CmdletBinding()]
 param(
-  [string]$ExtraRootDir = "Extra",
+  [string]$ExtraRootDir = "",
 
   [string]$OutArchive = "",
 
@@ -164,7 +164,7 @@ param(
 
   [string]$Work = "",
 
-  [string]$ExportDir = "Export",
+  [string]$ExportDir = "",
 
   [string]$GitHubToken = "",
 
@@ -217,21 +217,21 @@ $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot }
 elseif ($PSCommandPath) { Split-Path -Parent $PSCommandPath }
 else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 
-$CurrentDir = (Get-Location).Path
+
 if ([string]::IsNullOrWhiteSpace($DownloadDir)) {
-  $DownloadDir = Join-Path $CurrentDir "Download"
+  $DownloadDir = Join-Path $ScriptDir "Download"
 } else {
   $DownloadDir = [System.IO.Path]::GetFullPath($DownloadDir)
 }
 
 if ([string]::IsNullOrWhiteSpace($Work)) {
-  $Work = Join-Path $CurrentDir "Work"
+  $Work = Join-Path $ScriptDir "Work"
 } else {
   $Work = [System.IO.Path]::GetFullPath($Work)
 }
 
 if ([string]::IsNullOrWhiteSpace($ExportDir)) {
-  $ExportDir = Join-Path $CurrentDir "Export"
+  $ExportDir = Join-Path $ScriptDir "Export"
 } else {
   $ExportDir = [System.IO.Path]::GetFullPath($ExportDir)
 }
@@ -243,7 +243,7 @@ if ($OutArchiveProvided) {
 }
 
 if ([string]::IsNullOrWhiteSpace($LogFile)) {
-  $LogFile = Join-Path $ScriptDir ("maj_trivy_offline_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+  $LogFile = Join-Path $Work ("maj_trivy_offline_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
 } else {
   $LogFile = [System.IO.Path]::GetFullPath($LogFile)
 }
@@ -794,7 +794,7 @@ try {
   Log ("==== start {0} ====" -f (Get-Date))
 
   if ([string]::IsNullOrWhiteSpace($ExtraRootDir)) {
-    $ExtraRootDir = Join-Path $CurrentDir "Extra"
+    $ExtraRootDir = Join-Path $ScriptDir "Extra"
   } else {
     $ExtraRootDir = [System.IO.Path]::GetFullPath($ExtraRootDir)
   }
@@ -1114,4 +1114,5 @@ finally {
   Log ("==== end {0} ====" -f (Get-Date))
   Close-Log
 }
+
 
