@@ -30,7 +30,7 @@ Script : `maj_trivy_offline.ps1`
 ### Exemple minimal
 
 ```powershell
-.\maj_trivy_offline.ps1 -ExtraRootDir "D:\trivy\extra"
+.\maj_trivy_offline.ps1
 ```
 
 ### Exemples utiles
@@ -59,11 +59,12 @@ Script : `maj_trivy_offline.ps1`
 
 ### Paramètres principaux
 
-- `-ExtraRootDir` (obligatoire) : contenu copié à la racine de l’archive.
+- `-ExtraRootDir` : contenu copié à la racine de l’archive (défaut : `.\\Extra` depuis le dossier courant).
 - `-OutArchive` : chemin du `.tar.gz` final.
 - `-LogFile` : fichier de log.
 - `-DownloadDir` : dossier des releases Trivy téléchargées (défaut : `.\Download` depuis le dossier courant).
 - `-Work` : dossier de travail pour extraction/cache/bundle (défaut : `.\Work` depuis le dossier courant).
+- `-ExportDir` : dossier de sortie pour l’archive et les exports CSV additionnels (défaut : `.\\Export` depuis le dossier courant).
 - `-PythonExePath` / `-UsePyLauncher` : sélection de l’exécutable Python.
 - `-UseTarForArchive` : génère l’archive finale avec `tar.exe` (au lieu de Python).
 - `-Use7ZipForArchive` : génère l’archive finale avec `7z.exe`/`7za.exe` (au lieu de Python).

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
 maj_trivy_offline.ps1 - Construit une archive offline Trivy (tar.gz) contenant :
 - trivy.exe (Windows x64) + trivy (Linux x64)
@@ -30,7 +30,8 @@ Objectif
   - autres fichiers en 0644
 
 Entrées
-- ExtraRootDir (obligatoire) : les fichiers/dossiers qu’il contient sont copiés à la RACINE de l’archive.
+- ExtraRootDir (optionnel) : les fichiers/dossiers qu’il contient sont copiés à la RACINE de l’archive.
+  Par défaut : <dossier_courant>\Extra
 - OutArchive (optionnel) : chemin du tar.gz final. Par défaut : <dossier_du_script>\trivy-offline-bundle_<version_trivy>_<yyyymmdd_db>.tar.gz
 - LogFile (optionnel) : log. Par défaut : <dossier_du_script>\maj_trivy_offline_yyyyMMdd_HHmmss.log
 - DownloadDir (optionnel) : dossier de téléchargement des releases Trivy.
@@ -38,7 +39,7 @@ Entrées
 - Work (optionnel) : dossier de travail utilisé pour extraction/cache/bundle.
   Par défaut : <dossier_courant>\Work
 - ExportDir (optionnel) : dossier de sortie pour l'archive et les exports CSV additionnels.
-  Par défaut : <dossier_du_script>\Export
+  Par défaut : <dossier_courant>\Export
 - PythonExePath (optionnel) : chemin d’un exécutable Python à utiliser (ex: C:\Python311\python.exe). Si renseigné, il est prioritaire.
 - UsePyLauncher (switch) : force l’utilisation de py.exe (launcher Python). Le script utilise alors typiquement "py.exe -3".
 - GitHubToken (optionnel) : token GitHub pour API/download (403/429).
@@ -83,8 +84,8 @@ Références documentaires
   https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_comment_based_help
 
 .EXAMPLE
-# Minimal : archive + log à côté du script
-.\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra"
+# Minimal : utilise .\Extra et écrit dans .\Export
+.\maj_trivy_offline.ps1
 
 .EXAMPLE
 # Spécifier l’archive et le log
@@ -149,8 +150,7 @@ Références documentaires
 
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)]
-  [string]$ExtraRootDir,
+  [string]$ExtraRootDir = "Extra",
 
   [string]$OutArchive = "",
 
@@ -164,7 +164,7 @@ param(
 
   [string]$Work = "",
 
-  [string]$ExportDir = "",
+  [string]$ExportDir = "Export",
 
   [string]$GitHubToken = "",
 
@@ -231,7 +231,7 @@ if ([string]::IsNullOrWhiteSpace($Work)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($ExportDir)) {
-  $ExportDir = Join-Path $ScriptDir "Export"
+  $ExportDir = Join-Path $CurrentDir "Export"
 } else {
   $ExportDir = [System.IO.Path]::GetFullPath($ExportDir)
 }
@@ -793,7 +793,11 @@ function Show-Plan([hashtable]$P) {
 try {
   Log ("==== start {0} ====" -f (Get-Date))
 
-  $ExtraRootDir = [System.IO.Path]::GetFullPath($ExtraRootDir)
+  if ([string]::IsNullOrWhiteSpace($ExtraRootDir)) {
+    $ExtraRootDir = Join-Path $CurrentDir "Extra"
+  } else {
+    $ExtraRootDir = [System.IO.Path]::GetFullPath($ExtraRootDir)
+  }
   if (-not (Test-Path -LiteralPath $ExtraRootDir)) { throw "ExtraRootDir introuvable: $ExtraRootDir" }
   if (-not (Get-Item -LiteralPath $ExtraRootDir).PSIsContainer) { throw "ExtraRootDir n'est pas un dossier: $ExtraRootDir" }
 
