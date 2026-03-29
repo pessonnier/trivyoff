@@ -1,5 +1,3 @@
-﻿$VERSION = "1.1.0"
-
 <#
 .SYNOPSIS
 maj_trivy_offline.ps1 - Construit une archive offline Trivy (tar.gz) contenant :
@@ -156,6 +154,8 @@ param(
 
   [switch]$KeepWorkDir
 )
+
+﻿$VERSION = "1.1.0"
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
