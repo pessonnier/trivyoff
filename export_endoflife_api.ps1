@@ -139,21 +139,13 @@ $currentProduct = 0
 
 foreach ($productItem in $products) {
   $currentProduct++
-  $product = ""
-
-  if ($productItem -is [string]) {
-    $product = $productItem
-  } elseif ($productItem -is [pscustomobject] -or $productItem -is [hashtable]) {
-    if ($productItem.PSObject.Properties.Name -contains "slug") {
-      $product = [string]$productItem.slug
-    } elseif ($productItem.PSObject.Properties.Name -contains "product") {
-      $product = [string]$productItem.product
-    }
-  }
-
-  $product = $product.Trim()
+  $product = Resolve-ProductName -ProductItem $productItem
   if ([string]::IsNullOrWhiteSpace($product)) {
-    Write-Warning ("[{0}/{1}] Produit ignoré (nom vide)." -f $currentProduct, $totalProducts)
+    $productItemJson = Convert-ToCellValue -Value $productItem
+    if ($productItemJson.Length -gt 240) {
+      $productItemJson = $productItemJson.Substring(0, 240) + "..."
+    }
+    Write-Warning ("[{0}/{1}] Produit ignoré (nom vide). Item brut: {2}" -f $currentProduct, $totalProducts, $productItemJson)
     continue
   }
 
