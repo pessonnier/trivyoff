@@ -1079,7 +1079,7 @@ spec:
         }
         Log "Export EndOfLife API v1 via Python -> $EndOfLifeCsvPath"
         $args = @($script:PythonPrefixArgs + @($eolPyScript, "--base-url", $EndOfLifeApiBaseUrl, "--output", $EndOfLifeCsvPath))
-        Run-ExternalLogged -Label "Export endOfLife en Python" -Exe $PythonExe -Args $args -WorkDir $ScriptDir -Work $Work
+        Run-ExternalLogged -Label "Export endOfLife en Python" -Exe $PythonExe -ArgList $args -WorkDir $ScriptDir -Work $Work
         break
       }
       default {
@@ -1087,7 +1087,7 @@ spec:
           throw "Script introuvable: $eolPsScript"
         }
         Log "Export EndOfLife API v1 via PowerShell -> $EndOfLifeCsvPath"
-        Run-ExternalLogged -Label "Export endOfLife en PowerShell" -Exe "powershell.exe" -Args @(
+        Run-ExternalLogged -Label "Export endOfLife en PowerShell" -Exe "powershell.exe" -ArgList @(
           "-NoProfile",
           "-ExecutionPolicy", "Bypass",
           "-File", $eolPsScript,
