@@ -102,12 +102,70 @@ function Get-ReleaseObjects {
   return @()
 }
 
+function Get-ProductList {
+  param($Payload)
+
+  if ($Payload -is [System.Array]) {
+    return @($Payload)
+  }
+
+  if ($Payload -is [pscustomobject] -or $Payload -is [hashtable]) {
+    foreach ($k in @("products", "items", "data", "result")) {
+      if ($Payload.PSObject.Properties.Name -contains $k -and $Payload.$k -is [System.Array]) {
+        return @($Payload.$k)
+      }
+    }
+  }
+
+  return @()
+}
+
+function Resolve-ProductName {
+  param($ProductItem)
+
+  if ($ProductItem -is [string]) {
+    return $ProductItem.Trim()
+  }
+
+  if ($ProductItem -is [pscustomobject] -or $ProductItem -is [hashtable]) {
+    $preferredKeys = @("slug", "product", "name", "id", "key", "cycle", "title")
+    foreach ($k in $preferredKeys) {
+      if ($ProductItem.PSObject.Properties.Name -contains $k) {
+        $candidate = $ProductItem.$k
+
+        if ($candidate -is [string]) {
+          $candidate = $candidate.Trim()
+          if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            return $candidate
+          }
+        }
+
+        if ($candidate -is [pscustomobject] -or $candidate -is [hashtable]) {
+          foreach ($nestedKey in @("slug", "name", "id")) {
+            if ($candidate.PSObject.Properties.Name -contains $nestedKey) {
+              $nestedValue = [string]$candidate.$nestedKey
+              $nestedValue = $nestedValue.Trim()
+              if (-not [string]::IsNullOrWhiteSpace($nestedValue)) {
+                return $nestedValue
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return ""
+}
+
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 $productsUrl = "$ApiBaseUrl/products"
 
-$products = Invoke-ApiJson -Url $productsUrl
-if (-not ($products -is [System.Array])) {
-  throw "La réponse de /products n'est pas une liste JSON."
+$productsPayload = Invoke-ApiJson -Url $productsUrl
+$products = Get-ProductList -Payload $productsPayload
+if ($products.Count -eq 0) {
+  $payloadType = if ($null -eq $productsPayload) { "null" } else { $productsPayload.GetType().FullName }
+  throw ("La réponse de /products ne contient pas de liste de produits reconnue. Type reçu: {0}" -f $payloadType)
 }
 Write-Host ("[INFO] {0} produits trouvés." -f $products.Count)
 
@@ -119,21 +177,13 @@ $currentProduct = 0
 
 foreach ($productItem in $products) {
   $currentProduct++
-  $product = ""
-
-  if ($productItem -is [string]) {
-    $product = $productItem
-  } elseif ($productItem -is [pscustomobject] -or $productItem -is [hashtable]) {
-    if ($productItem.PSObject.Properties.Name -contains "slug") {
-      $product = [string]$productItem.slug
-    } elseif ($productItem.PSObject.Properties.Name -contains "product") {
-      $product = [string]$productItem.product
-    }
-  }
-
-  $product = $product.Trim()
+  $product = Resolve-ProductName -ProductItem $productItem
   if ([string]::IsNullOrWhiteSpace($product)) {
-    Write-Warning ("[{0}/{1}] Produit ignoré (nom vide)." -f $currentProduct, $totalProducts)
+    $productItemJson = Convert-ToCellValue -Value $productItem
+    if ($productItemJson.Length -gt 240) {
+      $productItemJson = $productItemJson.Substring(0, 240) + "..."
+    }
+    Write-Warning ("[{0}/{1}] Produit ignoré (nom vide). Item brut: {2}" -f $currentProduct, $totalProducts, $productItemJson)
     continue
   }
 
