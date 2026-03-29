@@ -87,7 +87,11 @@ function Convert-ToCellValue {
 function Get-ReleaseObjects {
   param($Payload)
 
-  if ($Payload -is [System.Array]) {
+  if ($null -eq $Payload) {
+    return @()
+  }
+
+  if ($Payload -is [System.Collections.IEnumerable] -and -not ($Payload -is [string]) -and -not ($Payload -is [hashtable]) -and -not ($Payload -is [pscustomobject])) {
     return @($Payload | Where-Object { $_ -is [pscustomobject] -or $_ -is [hashtable] })
   }
 
@@ -105,7 +109,11 @@ function Get-ReleaseObjects {
 function Get-ProductList {
   param($Payload)
 
-  if ($Payload -is [System.Array]) {
+  if ($null -eq $Payload) {
+    return @()
+  }
+
+  if ($Payload -is [System.Collections.IEnumerable] -and -not ($Payload -is [string]) -and -not ($Payload -is [hashtable]) -and -not ($Payload -is [pscustomobject])) {
     return @($Payload)
   }
 
@@ -144,21 +152,40 @@ function Resolve-ProductName {
   return ""
 }
 
+function Get-CollectionCount {
+  param($Value)
+
+  if ($null -eq $Value) {
+    return 0
+  }
+
+  if ($Value -is [System.Collections.ICollection]) {
+    return $Value.Count
+  }
+
+  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
+    return @($Value).Count
+  }
+
+  return 1
+}
+
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 $productsUrl = "$ApiBaseUrl/products"
 
 $productsPayload = Invoke-ApiJson -Url $productsUrl
 $products = Get-ProductList -Payload $productsPayload
-if ($products.Count -eq 0) {
+$productsCount = Get-CollectionCount -Value $products
+if ($productsCount -eq 0) {
   $payloadType = if ($null -eq $productsPayload) { "null" } else { $productsPayload.GetType().FullName }
   throw ("La réponse de /products ne contient pas de liste de produits reconnue. Type reçu: {0}" -f $payloadType)
 }
-Write-Host ("[INFO] {0} produits trouvés." -f $products.Count)
+Write-Host ("[INFO] {0} produits trouvés." -f $productsCount)
 
 $rows = New-Object System.Collections.Generic.List[object]
 $dynamicColumns = New-Object System.Collections.Generic.HashSet[string]
 $errors = New-Object System.Collections.Generic.List[string]
-$totalProducts = $products.Count
+$totalProducts = $productsCount
 $currentProduct = 0
 
 foreach ($productItem in $products) {
@@ -190,7 +217,8 @@ foreach ($productItem in $products) {
     continue
   }
   $releases = Get-ReleaseObjects -Payload $productPayload
-  Write-Host ("[{0}/{1}] [OK] {2}: {3} release(s) récupérée(s)." -f $currentProduct, $totalProducts, $product, $releases.Count)
+  $releasesCount = Get-CollectionCount -Value $releases
+  Write-Host ("[{0}/{1}] [OK] {2}: {3} release(s) récupérée(s)." -f $currentProduct, $totalProducts, $product, $releasesCount)
 
   $idx = 0
   foreach ($release in $releases) {
