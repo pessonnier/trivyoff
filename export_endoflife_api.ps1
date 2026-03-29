@@ -102,12 +102,32 @@ function Get-ReleaseObjects {
   return @()
 }
 
+function Get-ProductList {
+  param($Payload)
+
+  if ($Payload -is [System.Array]) {
+    return @($Payload)
+  }
+
+  if ($Payload -is [pscustomobject] -or $Payload -is [hashtable]) {
+    foreach ($k in @("products", "items", "data", "result")) {
+      if ($Payload.PSObject.Properties.Name -contains $k -and $Payload.$k -is [System.Array]) {
+        return @($Payload.$k)
+      }
+    }
+  }
+
+  return @()
+}
+
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 $productsUrl = "$ApiBaseUrl/products"
 
-$products = Invoke-ApiJson -Url $productsUrl
-if (-not ($products -is [System.Array])) {
-  throw "La réponse de /products n'est pas une liste JSON."
+$productsPayload = Invoke-ApiJson -Url $productsUrl
+$products = Get-ProductList -Payload $productsPayload
+if ($products.Count -eq 0) {
+  $payloadType = if ($null -eq $productsPayload) { "null" } else { $productsPayload.GetType().FullName }
+  throw ("La réponse de /products ne contient pas de liste de produits reconnue. Type reçu: {0}" -f $payloadType)
 }
 Write-Host ("[INFO] {0} produits trouvés." -f $products.Count)
 
