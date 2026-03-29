@@ -203,6 +203,12 @@ $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = "SilentlyContinue"
 
+# Force l'UTF-8 pour l'affichage console afin d'éviter les accents illisibles (ex: dÃ©faut).
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::InputEncoding = $Utf8NoBom
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
+
 # Préfixe d’arguments pour Python (ex: @('-3') si utilisation de py.exe)
 $script:PythonPrefixArgs = @()
 

@@ -41,6 +41,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "Continue"
 
+# Force l'UTF-8 pour l'affichage console afin d'éviter les accents illisibles (ex: dÃ©faut).
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::InputEncoding = $Utf8NoBom
+[Console]::OutputEncoding = $Utf8NoBom
+$OutputEncoding = $Utf8NoBom
+
 function Invoke-ApiJson {
   param([Parameter(Mandatory=$true)][string]$Url)
 
