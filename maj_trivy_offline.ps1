@@ -37,6 +37,8 @@ Entrées
   Par défaut : <dossier_courant>\Download
 - Work (optionnel) : dossier de travail utilisé pour extraction/cache/bundle.
   Par défaut : <dossier_courant>\Work
+- ExportDir (optionnel) : dossier de sortie pour l'archive et les exports CSV additionnels.
+  Par défaut : <dossier_du_script>\Export
 - PythonExePath (optionnel) : chemin d’un exécutable Python à utiliser (ex: C:\Python311\python.exe). Si renseigné, il est prioritaire.
 - UsePyLauncher (switch) : force l’utilisation de py.exe (launcher Python). Le script utilise alors typiquement "py.exe -3".
 - GitHubToken (optionnel) : token GitHub pour API/download (403/429).
@@ -127,6 +129,10 @@ Références documentaires
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -KeepWorkDir
 
 .EXAMPLE
+# Définir un dossier alternatif pour l’archive et les CSV additionnels
+.\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -ExportDir "D:\bureau\trivy\out"
+
+.EXAMPLE
 # Exporter l'API EndOfLife v1 en CSV via PowerShell
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -ExportEndOfLifeApiCsv
 
@@ -157,6 +163,8 @@ param(
   [string]$DownloadDir = "",
 
   [string]$Work = "",
+
+  [string]$ExportDir = "",
 
   [string]$GitHubToken = "",
 
@@ -214,6 +222,12 @@ if ([string]::IsNullOrWhiteSpace($Work)) {
   $Work = Join-Path $CurrentDir "Work"
 } else {
   $Work = [System.IO.Path]::GetFullPath($Work)
+}
+
+if ([string]::IsNullOrWhiteSpace($ExportDir)) {
+  $ExportDir = Join-Path $ScriptDir "Export"
+} else {
+  $ExportDir = [System.IO.Path]::GetFullPath($ExportDir)
 }
 
 # --- Défauts OutArchive / LogFile ---
@@ -916,7 +930,7 @@ try {
 
   if (-not $OutArchiveProvided) {
     $defaultArchiveName = "trivy-offline-bundle_{0}_{1}.tar.gz" -f $archiveVersion, $dbDateStamp
-    $OutArchive = Join-Path $ScriptDir $defaultArchiveName
+    $OutArchive = Join-Path $ExportDir $defaultArchiveName
     Log "OutArchive auto: $OutArchive"
   }
 
@@ -1017,7 +1031,7 @@ spec:
   Log "Archive created: $OutArchive"
   Log ("Extraction Linux: tar -xzf {0} ; ./trivy version" -f (Split-Path -Leaf $OutArchive))
 
-  $outDir = Split-Path -Parent $OutArchive
+  $outDir = $ExportDir
   $additionalFiles = @(
     "https://epss.cyentia.com/epss_scores-current.csv.gz",
     "https://www.cisa.gov/sites/default/files/csv/known_exploited_vulnerabilities.csv",
@@ -1025,6 +1039,7 @@ spec:
   )
 
   Log "Download additional CSV files -> $outDir"
+  New-Dir $outDir
   foreach ($url in $additionalFiles) {
     $fileName = [System.IO.Path]::GetFileName(([System.Uri]$url).AbsolutePath)
     $destFile = Join-Path $outDir $fileName
