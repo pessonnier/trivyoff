@@ -58,8 +58,8 @@ Pré-requis et invariants
 - Pour garantir que "./trivy" (Linux) reste exécutable après extraction : l'archive tar.gz doit stocker un mode 0755. Le script utilise Python (recommandé) pour créer le tar.gz en fixant explicitement le mode (0755 pour ./trivy).
 - Journalisation robuste : pas de redirection vers le log pendant que le log est ouvert.
 
-Dossiers utilisés (dans %TEMP%)
-- <work>\downloads\        : assets GitHub téléchargés
+Dossiers utilisés
+- <script>\                : assets GitHub téléchargés/réutilisés (pas dans %TEMP%)
 - <work>\extract_windows\  : zip Windows extrait
 - <work>\extract_linux\    : tar.gz Linux extrait (via Python)
 - <work>\cache\            : cache Trivy préchargé
@@ -251,6 +251,65 @@ function Download-File([string]$Url, [string]$OutFile) {
     Log ("ERREUR download: " + $_.Exception.Message)
     throw
   }
+}
+
+function Get-TrivyAssetVersionFromName([string]$AssetName) {
+  if ([string]::IsNullOrWhiteSpace($AssetName)) { return $null }
+  if ($AssetName -match '^trivy_([^_]+)_(?:windows-64bit\.zip|Linux-64bit\.tar\.gz)$') {
+    return $Matches[1]
+  }
+  return $null
+}
+
+function Ensure-TrivyAsset([object]$Asset, [string]$DestinationDir) {
+  if (-not $Asset) { throw "Asset invalide (null)." }
+  $assetName = [string]$Asset.name
+  if ([string]::IsNullOrWhiteSpace($assetName)) { throw "Asset sans nom." }
+  if (-not (Test-Path -LiteralPath $DestinationDir)) {
+    New-Dir $DestinationDir
+  }
+
+  $destFile = Join-Path $DestinationDir $assetName
+  $releaseVersion = Get-TrivyAssetVersionFromName $assetName
+
+  $pattern = if ($assetName -match 'windows-64bit\.zip$') {
+    'trivy_*_windows-64bit.zip'
+  } elseif ($assetName -match 'Linux-64bit\.tar\.gz$') {
+    'trivy_*_Linux-64bit.tar.gz'
+  } else {
+    $null
+  }
+
+  if ($pattern) {
+    $localCandidates = @(Get-ChildItem -LiteralPath $DestinationDir -File -Filter $pattern -ErrorAction SilentlyContinue)
+    if ($localCandidates.Count -gt 0) {
+      $localVersions = @(
+        $localCandidates |
+          ForEach-Object { Get-TrivyAssetVersionFromName $_.Name } |
+          Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+          Sort-Object -Unique
+      )
+      if ($localVersions.Count -gt 0) {
+        Log ("Assets locaux detectes ({0}): versions=[{1}] ; release={2}" -f $pattern, ($localVersions -join ", "), $releaseVersion)
+      } else {
+        Log ("Assets locaux detectes ({0}) mais version non extraite depuis les noms de fichier." -f $pattern)
+      }
+    }
+  }
+
+  if (Test-Path -LiteralPath $destFile) {
+    $existing = Get-Item -LiteralPath $destFile
+    if ($existing.Length -eq [int64]$Asset.size) {
+      Log ("Asset deja present et valide (meme version/meme taille) -> skip download: {0}" -f $destFile)
+      return $destFile
+    }
+    Log ("Asset present mais taille differente (local={0} release={1}) -> re-download: {2}" -f $existing.Length, $Asset.size, $destFile)
+  } else {
+    Log ("Asset de la release absent localement (version release={0}) -> download requis: {1}" -f $releaseVersion, $destFile)
+  }
+
+  Download-File $Asset.browser_download_url $destFile
+  return $destFile
 }
 
 function Resolve-Python([string]$PythonExePath, [switch]$UsePyLauncher) {
@@ -570,14 +629,13 @@ try {
   $work = Join-Path $env:TEMP ("trivy_bundle_{0}" -f ([Guid]::NewGuid().ToString("N")))
   New-Dir $work
 
-  $downloads = Join-Path $work "downloads"
+  $downloads = $ScriptDir
   $extractW  = Join-Path $work "extract_windows"
   $extractL  = Join-Path $work "extract_linux"
   $cacheDir  = Join-Path $work "cache"
   $seedDir   = Join-Path $work "seed-misconfig"
   $bundleDir = Join-Path $work "bundle-root"
 
-  New-Dir $downloads
   New-Dir $extractW
   New-Dir $extractL
   New-Dir $cacheDir
@@ -627,11 +685,8 @@ try {
   Log ("Asset Windows: {0} size={1}" -f $winAsset.name, $winAsset.size)
   Log ("Asset Linux  : {0} size={1}" -f $linAsset.name, $linAsset.size)
 
-  $winZip = Join-Path $downloads $winAsset.name
-  $linTgz = Join-Path $downloads $linAsset.name
-
-  Download-File $winAsset.browser_download_url $winZip
-  Download-File $linAsset.browser_download_url $linTgz
+  $winZip = Ensure-TrivyAsset -Asset $winAsset -DestinationDir $downloads
+  $linTgz = Ensure-TrivyAsset -Asset $linAsset -DestinationDir $downloads
 
   Log "Extract Windows zip -> $extractW"
   Expand-Archive -LiteralPath $winZip -DestinationPath $extractW -Force
