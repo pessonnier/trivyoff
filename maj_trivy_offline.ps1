@@ -438,13 +438,74 @@ function Run-ExternalLogged([string]$Label, [string]$Exe, [string[]]$ArgList, [s
 
   $p = Start-Process @startParams
 
-  if (Test-Path $stdout) {
-    $global:LogWriter.WriteLine("----- STDOUT [$Label] -----")
-    Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue | ForEach-Object { $global:LogWriter.WriteLine($_) }
+  $stdoutStarted = $false
+  $stderrStarted = $false
+  $lastStdoutLine = 0
+  $lastStderrLine = 0
+  $lastHeartbeat = Get-Date
+  $heartbeatIntervalSec = 30
+
+  while (-not $p.HasExited) {
+    if (Test-Path -LiteralPath $stdout) {
+      $stdoutLines = @(Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue)
+      if ($stdoutLines.Count -gt $lastStdoutLine) {
+        if (-not $stdoutStarted) {
+          $global:LogWriter.WriteLine("----- STDOUT [$Label] -----")
+          $stdoutStarted = $true
+        }
+        for ($i = $lastStdoutLine; $i -lt $stdoutLines.Count; $i++) {
+          $global:LogWriter.WriteLine($stdoutLines[$i])
+        }
+        $lastStdoutLine = $stdoutLines.Count
+      }
+    }
+
+    if (Test-Path -LiteralPath $stderr) {
+      $stderrLines = @(Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue)
+      if ($stderrLines.Count -gt $lastStderrLine) {
+        if (-not $stderrStarted) {
+          $global:LogWriter.WriteLine("----- STDERR [$Label] -----")
+          $stderrStarted = $true
+        }
+        for ($i = $lastStderrLine; $i -lt $stderrLines.Count; $i++) {
+          $global:LogWriter.WriteLine($stderrLines[$i])
+        }
+        $lastStderrLine = $stderrLines.Count
+      }
+    }
+
+    $now = Get-Date
+    if ((New-TimeSpan -Start $lastHeartbeat -End $now).TotalSeconds -ge $heartbeatIntervalSec) {
+      Log ("[{0}] commande en cours..." -f $Label)
+      $lastHeartbeat = $now
+    }
+
+    Start-Sleep -Milliseconds 500
   }
-  if (Test-Path $stderr) {
-    $global:LogWriter.WriteLine("----- STDERR [$Label] -----")
-    Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue | ForEach-Object { $global:LogWriter.WriteLine($_) }
+
+  if (Test-Path -LiteralPath $stdout) {
+    $stdoutLines = @(Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue)
+    if ($stdoutLines.Count -gt $lastStdoutLine) {
+      if (-not $stdoutStarted) {
+        $global:LogWriter.WriteLine("----- STDOUT [$Label] -----")
+        $stdoutStarted = $true
+      }
+      for ($i = $lastStdoutLine; $i -lt $stdoutLines.Count; $i++) {
+        $global:LogWriter.WriteLine($stdoutLines[$i])
+      }
+    }
+  }
+  if (Test-Path -LiteralPath $stderr) {
+    $stderrLines = @(Get-Content -LiteralPath $stderr -ErrorAction SilentlyContinue)
+    if ($stderrLines.Count -gt $lastStderrLine) {
+      if (-not $stderrStarted) {
+        $global:LogWriter.WriteLine("----- STDERR [$Label] -----")
+        $stderrStarted = $true
+      }
+      for ($i = $lastStderrLine; $i -lt $stderrLines.Count; $i++) {
+        $global:LogWriter.WriteLine($stderrLines[$i])
+      }
+    }
   }
   $global:LogWriter.WriteLine("----- END [$Label] (exit={0}) -----" -f $p.ExitCode)
 
