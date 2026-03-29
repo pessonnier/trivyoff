@@ -6,3 +6,4 @@ secret.env
 *.gz
 Download/
 Work/
+Export/
