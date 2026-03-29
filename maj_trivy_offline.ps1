@@ -453,6 +453,26 @@ function Run-ExternalLogged([string]$Label, [string]$Exe, [string[]]$ArgList, [s
   }
 }
 
+function Invoke-WithRetry([string]$Label, [scriptblock]$Action, [int]$MaxAttempts = 3, [int]$DelaySeconds = 5) {
+  for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+    try {
+      if ($attempt -gt 1) {
+        Log ("REPRISE [{0}] - tentative {1}/{2}" -f $Label, $attempt, $MaxAttempts)
+      }
+      & $Action
+      return
+    } catch {
+      if ($attempt -ge $MaxAttempts) {
+        Log ("ECHEC DEFINITIF [{0}] apres {1} tentative(s)." -f $Label, $MaxAttempts)
+        throw
+      }
+      Log ("Echec [{0}] tentative {1}/{2}: {3}" -f $Label, $attempt, $MaxAttempts, $_.Exception.Message)
+      Log ("Nouvelle tentative dans {0}s..." -f $DelaySeconds)
+      Start-Sleep -Seconds $DelaySeconds
+    }
+  }
+}
+
 function Py-RunScript([string]$PythonExe, [string]$ScriptContent, [string]$Label, [string]$Work, [string]$WorkDir) {
   $tmpPy = Join-Path $Work ("py_{0}_{1}.py" -f $Label, ([Guid]::NewGuid().ToString("N")))
   Set-Content -LiteralPath $tmpPy -Value $ScriptContent -Encoding UTF8
@@ -723,10 +743,14 @@ try {
   }
 
   Log "Preload vuln DB -> $cacheDir (date=$dbDateStamp)"
-  Run-ExternalLogged -Label "download_db" -Exe $trivyExe.FullName -ArgList @("image","--cache-dir",$cacheDir,"--download-db-only","--quiet","--no-progress") -WorkDir $ScriptDir -Work $work
+  Invoke-WithRetry -Label "download_db" -MaxAttempts 3 -DelaySeconds 5 -Action {
+    Run-ExternalLogged -Label "download_db" -Exe $trivyExe.FullName -ArgList @("image","--cache-dir",$cacheDir,"--download-db-only","--no-progress") -WorkDir $ScriptDir -Work $work
+  }
 
   Log "Preload java DB -> $cacheDir"
-  Run-ExternalLogged -Label "download_java_db" -Exe $trivyExe.FullName -ArgList @("image","--cache-dir",$cacheDir,"--download-java-db-only","--quiet","--no-progress") -WorkDir $ScriptDir -Work $work
+  Invoke-WithRetry -Label "download_java_db" -MaxAttempts 3 -DelaySeconds 5 -Action {
+    Run-ExternalLogged -Label "download_java_db" -Exe $trivyExe.FullName -ArgList @("image","--cache-dir",$cacheDir,"--download-java-db-only","--no-progress") -WorkDir $ScriptDir -Work $work
+  }
 
   # seed-misconfig
   @"
