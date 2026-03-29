@@ -131,6 +131,10 @@ Références documentaires
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" `
   -ExportEndOfLifeApiCsv -EndOfLifeExportImplementation Python `
   -EndOfLifeCsvPath "D:\bureau\trivy\out\endoflife_api_v1_full_export.csv"
+
+.EXAMPLE
+# Désactiver l'export EndOfLife CSV
+.\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -DisableEndOfLifeApiCsv
 #>
 
 [CmdletBinding()]
@@ -165,6 +169,8 @@ param(
   [switch]$KeepWorkDir,
 
   [switch]$ExportEndOfLifeApiCsv,
+
+  [switch]$DisableEndOfLifeApiCsv,
 
   [string]$EndOfLifeCsvPath = "",
 
@@ -768,42 +774,46 @@ spec:
     Download-File -Url $url -OutFile $destFile
   }
 
-  if (-not $ExportEndOfLifeApiCsv) {
-    Log "Export EndOfLife API v1 active par défaut (même sans -ExportEndOfLifeApiCsv)."
-  }
-
-  if ([string]::IsNullOrWhiteSpace($EndOfLifeCsvPath)) {
-    $EndOfLifeCsvPath = Join-Path $outDir "endoflife_api_v1_full_export.csv"
+  if ($DisableEndOfLifeApiCsv) {
+    Log "Export EndOfLife API v1 désactivé via -DisableEndOfLifeApiCsv."
   } else {
-    $EndOfLifeCsvPath = [System.IO.Path]::GetFullPath($EndOfLifeCsvPath)
-  }
-
-  $eolPsScript = Join-Path $ScriptDir "extra/export_endoflife_api_v1.ps1"
-  $eolPyScript = Join-Path $ScriptDir "extra/export_endoflife_api_v1.py"
-
-  switch ($EndOfLifeExportImplementation) {
-    "Python" {
-      if (-not (Test-Path -LiteralPath $eolPyScript)) {
-        throw "Script introuvable: $eolPyScript"
-      }
-      Log "Export EndOfLife API v1 via Python -> $EndOfLifeCsvPath"
-      $args = @($script:PythonPrefixArgs + @($eolPyScript, "--base-url", $EndOfLifeApiBaseUrl, "--output", $EndOfLifeCsvPath))
-      Run-Exe -Exe $PythonExe -Args $args -WorkDir $ScriptDir -Work $work
-      break
+    if (-not $ExportEndOfLifeApiCsv) {
+      Log "Export EndOfLife API v1 actif par défaut (même sans -ExportEndOfLifeApiCsv)."
     }
-    default {
-      if (-not (Test-Path -LiteralPath $eolPsScript)) {
-        throw "Script introuvable: $eolPsScript"
+
+    if ([string]::IsNullOrWhiteSpace($EndOfLifeCsvPath)) {
+      $EndOfLifeCsvPath = Join-Path $outDir "endoflife_api_v1_full_export.csv"
+    } else {
+      $EndOfLifeCsvPath = [System.IO.Path]::GetFullPath($EndOfLifeCsvPath)
+    }
+
+    $eolPsScript = Join-Path $ScriptDir "extra/export_endoflife_api_v1.ps1"
+    $eolPyScript = Join-Path $ScriptDir "extra/export_endoflife_api_v1.py"
+
+    switch ($EndOfLifeExportImplementation) {
+      "Python" {
+        if (-not (Test-Path -LiteralPath $eolPyScript)) {
+          throw "Script introuvable: $eolPyScript"
+        }
+        Log "Export EndOfLife API v1 via Python -> $EndOfLifeCsvPath"
+        $args = @($script:PythonPrefixArgs + @($eolPyScript, "--base-url", $EndOfLifeApiBaseUrl, "--output", $EndOfLifeCsvPath))
+        Run-Exe -Exe $PythonExe -Args $args -WorkDir $ScriptDir -Work $work
+        break
       }
-      Log "Export EndOfLife API v1 via PowerShell -> $EndOfLifeCsvPath"
-      Run-Exe -Exe "powershell.exe" -Args @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", $eolPsScript,
-        "-ApiBaseUrl", $EndOfLifeApiBaseUrl,
-        "-OutputCsv", $EndOfLifeCsvPath
-      ) -WorkDir $ScriptDir -Work $work
-      break
+      default {
+        if (-not (Test-Path -LiteralPath $eolPsScript)) {
+          throw "Script introuvable: $eolPsScript"
+        }
+        Log "Export EndOfLife API v1 via PowerShell -> $EndOfLifeCsvPath"
+        Run-Exe -Exe "powershell.exe" -Args @(
+          "-NoProfile",
+          "-ExecutionPolicy", "Bypass",
+          "-File", $eolPsScript,
+          "-ApiBaseUrl", $EndOfLifeApiBaseUrl,
+          "-OutputCsv", $EndOfLifeCsvPath
+        ) -WorkDir $ScriptDir -Work $work
+        break
+      }
     }
   }
 }
