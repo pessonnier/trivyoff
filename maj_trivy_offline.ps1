@@ -787,8 +787,8 @@ spec:
       $EndOfLifeCsvPath = [System.IO.Path]::GetFullPath($EndOfLifeCsvPath)
     }
 
-    $eolPsScript = Join-Path $ScriptDir "extra/export_endoflife_api_v1.ps1"
-    $eolPyScript = Join-Path $ScriptDir "extra/export_endoflife_api_v1.py"
+    $eolPsScript = Join-Path $ScriptDir "export_endoflife_api.ps1"
+    $eolPyScript = Join-Path $ScriptDir "export_endoflife_api.py"
 
     switch ($EndOfLifeExportImplementation) {
       "Python" {
@@ -797,7 +797,7 @@ spec:
         }
         Log "Export EndOfLife API v1 via Python -> $EndOfLifeCsvPath"
         $args = @($script:PythonPrefixArgs + @($eolPyScript, "--base-url", $EndOfLifeApiBaseUrl, "--output", $EndOfLifeCsvPath))
-        Run-Exe -Exe $PythonExe -Args $args -WorkDir $ScriptDir -Work $work
+        Run-ExternalLogged -Label "Export endOfLife en Python" -Exe $PythonExe -Args $args -WorkDir $ScriptDir -Work $work
         break
       }
       default {
@@ -805,7 +805,7 @@ spec:
           throw "Script introuvable: $eolPsScript"
         }
         Log "Export EndOfLife API v1 via PowerShell -> $EndOfLifeCsvPath"
-        Run-Exe -Exe "powershell.exe" -Args @(
+        Run-ExternalLogged -Label "Export endOfLife en PowerShell" -Exe "powershell.exe" -Args @(
           "-NoProfile",
           "-ExecutionPolicy", "Bypass",
           "-File", $eolPsScript,
