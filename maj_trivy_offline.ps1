@@ -61,7 +61,7 @@ Pré-requis et invariants
 Dossiers utilisés
 - <script>\                : assets GitHub téléchargés/réutilisés (pas dans %TEMP%)
 - <work>\extract_windows\  : zip Windows extrait
-- <work>\extract_linux\    : tar.gz Linux extrait (via Python)
+- <work>\extract_linux\    : tar.gz Linux extrait (mode auto : 7zip > tar > python, ou mode force)
 - <work>\cache\            : cache Trivy préchargé
 - <work>\seed-misconfig\   : fichiers “appâts” + éventuel misconfig_seed.json
 - <work>\bundle-root\      : racine du contenu à archiver
@@ -560,6 +560,105 @@ print("OK")
   Py-RunScript -PythonExe $PythonExe -ScriptContent $script -Label "extract_tgz" -Work $Work -WorkDir $Work
 }
 
+function Py-ExtractZip([string]$PythonExe, [string]$ZipPath, [string]$DestDir, [string]$Work) {
+  $script = @"
+import os, zipfile
+z = r'''$ZipPath'''
+dst = r'''$DestDir'''
+os.makedirs(dst, exist_ok=True)
+with zipfile.ZipFile(z, "r") as zf:
+    zf.extractall(dst)
+print("OK")
+"@
+  Py-RunScript -PythonExe $PythonExe -ScriptContent $script -Label "extract_zip" -Work $Work -WorkDir $Work
+}
+
+function Extract-ZipWithTar([string]$TarExe, [string]$ZipPath, [string]$DestDir, [string]$Work) {
+  if (-not $TarExe) { throw "tar.exe introuvable." }
+  Run-ExternalLogged -Label "extract_zip_tar" -Exe $TarExe -ArgList @(
+    "-xf", $ZipPath,
+    "-C", $DestDir
+  ) -WorkDir (Split-Path -Parent $ZipPath) -Work $Work
+}
+
+function Extract-TarGzWithTar([string]$TarExe, [string]$TarGzPath, [string]$DestDir, [string]$Work) {
+  if (-not $TarExe) { throw "tar.exe introuvable." }
+  Run-ExternalLogged -Label "extract_tgz_tar" -Exe $TarExe -ArgList @(
+    "-xzf", $TarGzPath,
+    "-C", $DestDir
+  ) -WorkDir (Split-Path -Parent $TarGzPath) -Work $Work
+}
+
+function Extract-ZipWith7Zip([string]$SevenZipExe, [string]$ZipPath, [string]$DestDir, [string]$Work) {
+  if (-not $SevenZipExe) { throw "7z.exe/7za.exe introuvable." }
+  Run-ExternalLogged -Label "extract_zip_7zip" -Exe $SevenZipExe -ArgList @(
+    "x",
+    "-y",
+    "-o$DestDir",
+    $ZipPath
+  ) -WorkDir (Split-Path -Parent $ZipPath) -Work $Work
+}
+
+function Extract-TarGzWith7Zip([string]$SevenZipExe, [string]$TarGzPath, [string]$DestDir, [string]$Work) {
+  if (-not $SevenZipExe) { throw "7z.exe/7za.exe introuvable." }
+  $tmpTar = Join-Path $Work ("extract_{0}.tar" -f ([Guid]::NewGuid().ToString("N")))
+  try {
+    Run-ExternalLogged -Label "extract_tgz_to_tar_7zip" -Exe $SevenZipExe -ArgList @(
+      "e",
+      "-y",
+      "-o$Work",
+      $TarGzPath
+    ) -WorkDir (Split-Path -Parent $TarGzPath) -Work $Work
+
+    $tmpTarByName = Join-Path $Work (([System.IO.Path]::GetFileNameWithoutExtension($TarGzPath)))
+    if (-not (Test-Path -LiteralPath $tmpTarByName)) {
+      throw "Extraction 7zip du .tar intermediaire introuvable: $tmpTarByName"
+    }
+    Move-Item -LiteralPath $tmpTarByName -Destination $tmpTar -Force
+
+    Run-ExternalLogged -Label "extract_tar_7zip" -Exe $SevenZipExe -ArgList @(
+      "x",
+      "-y",
+      "-o$DestDir",
+      $tmpTar
+    ) -WorkDir $Work -Work $Work
+  } finally {
+    Remove-Item -LiteralPath $tmpTar -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Expand-TrivyReleaseAssets(
+  [string]$Mode,
+  [string]$SevenZipExe,
+  [string]$TarExe,
+  [string]$PythonExe,
+  [string]$WinZip,
+  [string]$LinTgz,
+  [string]$ExtractW,
+  [string]$ExtractL,
+  [string]$Work
+) {
+  switch ($Mode) {
+    "7zip" {
+      if (-not $SevenZipExe) { throw "Mode extraction 7zip selectionne mais 7z.exe/7za.exe est introuvable." }
+      Log "Extract release assets via 7zip (zip + tar.gz)."
+      Extract-ZipWith7Zip -SevenZipExe $SevenZipExe -ZipPath $WinZip -DestDir $ExtractW -Work $Work
+      Extract-TarGzWith7Zip -SevenZipExe $SevenZipExe -TarGzPath $LinTgz -DestDir $ExtractL -Work $Work
+    }
+    "tar" {
+      if (-not $TarExe) { throw "Mode extraction tar selectionne mais tar.exe est introuvable." }
+      Log "Extract release assets via tar.exe (zip + tar.gz)."
+      Extract-ZipWithTar -TarExe $TarExe -ZipPath $WinZip -DestDir $ExtractW -Work $Work
+      Extract-TarGzWithTar -TarExe $TarExe -TarGzPath $LinTgz -DestDir $ExtractL -Work $Work
+    }
+    default {
+      Log "Extract release assets via Python (zip + tar.gz)."
+      Py-ExtractZip -PythonExe $PythonExe -ZipPath $WinZip -DestDir $ExtractW -Work $Work
+      Py-ExtractTarGz -PythonExe $PythonExe -TarGzPath $LinTgz -DestDir $ExtractL -Work $Work
+    }
+  }
+}
+
 function Py-CreateTarGzWithModes([string]$PythonExe, [string]$SourceDir, [string]$OutFile, [string]$Work) {
   $script = @"
 import os, tarfile
@@ -769,11 +868,8 @@ try {
   $winZip = Ensure-TrivyAsset -Asset $winAsset -DestinationDir $downloads
   $linTgz = Ensure-TrivyAsset -Asset $linAsset -DestinationDir $downloads
 
-  Log "Extract Windows zip -> $extractW"
-  Expand-Archive -LiteralPath $winZip -DestinationPath $extractW -Force
-
-  Log "Extract Linux tar.gz -> $extractL (Python)"
-  Py-ExtractTarGz -PythonExe $PythonExe -TarGzPath $linTgz -DestDir $extractL -Work $work
+  Log ("Extraction mode: {0} (regles identiques a l'archive finale; ordre auto: 7zip > tar > python)" -f $archiveMode)
+  Expand-TrivyReleaseAssets -Mode $archiveMode -SevenZipExe $sevenZipExe -TarExe $tarExe -PythonExe $PythonExe -WinZip $winZip -LinTgz $linTgz -ExtractW $extractW -ExtractL $extractL -Work $work
 
   $trivyExe = Get-ChildItem -LiteralPath $extractW -Recurse -File -Filter "trivy.exe" | Select-Object -First 1
   if (-not $trivyExe) { throw "trivy.exe introuvable apres extraction Windows." }

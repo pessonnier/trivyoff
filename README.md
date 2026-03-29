@@ -71,6 +71,7 @@ Script : `maj_trivy_offline.ps1`
 
 > Les switches `-UseTarForArchive`, `-Use7ZipForArchive` et `-UsePythonForArchive` sont mutuellement exclusifs.  
 > Si aucun n’est fourni, le mode est choisi automatiquement dans l’ordre : **7zip**, puis **tar**, puis **python**.
+> Ce même mode (forcé ou auto) est aussi utilisé pour **l’extraction des assets release Trivy** (`Windows-64bit.zip` et `Linux-64bit.tar.gz`).
 
 ## 2) Scanner en offline sous Linux
 
