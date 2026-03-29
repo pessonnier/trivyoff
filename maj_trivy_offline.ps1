@@ -34,6 +34,7 @@ Entrées
   Par défaut : <dossier_du_script>\Extra
 - OutArchive (optionnel) : chemin du tar.gz final. Par défaut : <dossier_du_script>\Export\trivy-offline-bundle_<version_trivy>_<yyyymmdd_db>.tar.gz
 - LogFile (optionnel) : log. Par défaut : <dossier_du_script>\Work\maj_trivy_offline_yyyyMMdd_HHmmss.log
+  Les sous-logs stdout/stderr des commandes externes sont également générés dans <Work>.
 - DownloadDir (optionnel) : dossier de téléchargement des releases Trivy.
   Par défaut : <dossier_du_script>\Download
 - Work (optionnel) : dossier de travail utilisé pour extraction/cache/bundle.
@@ -61,17 +62,19 @@ Sorties
 
 Pré-requis et invariants
 - PowerShell 5.1 : le bloc param() DOIT être la première instruction (hors commentaires) sinon erreur de parsing.
-- Un outil "tar" doit être présent (Windows 10/11 en fournissent souvent un via bsdtar).
+- Un outil "tar" est optionnel (utile pour le mode tar ; Windows 10/11 en fournissent souvent un via bsdtar).
 - Pour garantir que "./trivy" (Linux) reste exécutable après extraction : l'archive tar.gz doit stocker un mode 0755. Le script utilise Python (recommandé) pour créer le tar.gz en fixant explicitement le mode (0755 pour ./trivy).
 - Journalisation robuste : pas de redirection vers le log pendant que le log est ouvert.
 
 Dossiers utilisés
-- <script>\                : assets GitHub téléchargés/réutilisés (pas dans %TEMP%)
+- <download>\              : assets GitHub téléchargés/réutilisés
+- <work>\                  : racine de travail ; contient le log principal, les sous-logs stdout/stderr et de possibles fichiers temporaires intermédiaires
 - <work>\extract_windows\  : zip Windows extrait
 - <work>\extract_linux\    : tar.gz Linux extrait (mode auto : 7zip > tar > python, ou mode force)
 - <work>\cache\            : cache Trivy préchargé
 - <work>\seed-misconfig\   : fichiers “appâts” + éventuel misconfig_seed.json
 - <work>\bundle-root\      : racine du contenu à archiver
+- <export>\                : archive finale et CSV additionnels
 
 Références documentaires
 - Trivy installation depuis release assets (tar -xzf, chmod +x) :
@@ -80,9 +83,18 @@ Références documentaires
   https://trivy.dev/docs/latest/guide/advanced/self-hosting/
 - Trivy DB configuration flags (db-repository / java-db-repository / checks-bundle-repository) :
   https://trivy.dev/docs/latest/configuration/db/
+- Trivy misconfiguration scanning (commande "trivy config" et checks bundle) :
+  https://trivy.dev/docs/latest/scanner/misconfiguration/
+- GitHub REST API "latest release" (endpoint utilisé pour récupérer la dernière release) :
+  https://docs.github.com/en/rest/releases/releases#get-the-latest-release
+- GitHub Releases Trivy (assets publiés) :
+  https://github.com/aquasecurity/trivy/releases
+- bsdtar / libarchive pour Windows (releases officielles) :
+  https://github.com/libarchive/libarchive/releases
+- endoflife.date API v1 (Swagger UI) :
+  https://endoflife.date/docs/api/v1/
 - PowerShell comment-based help :
   https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_comment_based_help
-
 .EXAMPLE
 # Minimal : utilise <dossier_du_script>\Extra et écrit dans <dossier_du_script>\Export
 .\maj_trivy_offline.ps1
@@ -813,7 +825,7 @@ try {
   $pyVerArgs = @()
   if ($script:PythonPrefixArgs -and $script:PythonPrefixArgs.Count -gt 0) { $pyVerArgs += $script:PythonPrefixArgs }
   $pyVerArgs += @("-c","import sys;print(sys.version);print(sys.executable)")
-  Run-ExternalLogged -Label "python_version" -Exe $PythonExe -ArgList $pyVerArgs -WorkDir $ScriptDir -Work $env:TEMP
+  Run-ExternalLogged -Label "python_version" -Exe $PythonExe -ArgList $pyVerArgs -WorkDir $ScriptDir -Work $Work
 
   Ensure-TarWithPermission
   $tarExe = Get-TarExePath
@@ -1108,7 +1120,19 @@ finally {
     Log "Workdir kept: $Work"
   } else {
     if ($Work -and (Test-Path -LiteralPath $Work)) {
-      Remove-Item -LiteralPath $Work -Recurse -Force -ErrorAction SilentlyContinue
+      foreach ($dirName in @("extract_windows", "extract_linux", "cache", "seed-misconfig", "bundle-root")) {
+        $dirPath = Join-Path $Work $dirName
+        if (Test-Path -LiteralPath $dirPath) {
+          Remove-Item -LiteralPath $dirPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+      }
+
+      foreach ($filePattern in @("py_*.py", "extract_*.tar", "bundle_*.tar", "misconfig_seed.json")) {
+        Get-ChildItem -LiteralPath $Work -File -Filter $filePattern -ErrorAction SilentlyContinue |
+          Remove-Item -Force -ErrorAction SilentlyContinue
+      }
+
+      Log "Workdir temp cleanup done (logs conserves dans $Work)."
     }
   }
   Log ("==== end {0} ====" -f (Get-Date))

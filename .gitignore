@@ -4,6 +4,6 @@ secret.env
 *.csv
 *.log
 *.gz
-Download/
-Work/
-Export/
+Download/*
+Work/*
+Export/*
