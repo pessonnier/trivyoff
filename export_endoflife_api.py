@@ -2,30 +2,21 @@
 """
 export_endoflife_api_v1.py
 
-But
-- Exporter l'ensemble des données de l'API EndOfLife v1 vers un unique CSV,
-  en parcourant les produits puis les releases de chaque produit.
+Exporte le payload `/products/full` de l'API EndOfLife v1 vers :
+- un JSON brut,
+- un CSV aplati (une ligne par release, avec repetition des attributs produit).
 
-Prérequis
-- Python 3.8+
-- Accès réseau à https://endoflife.date
+Le CSV contient des colonnes prefixees pour eviter les collisions :
+- `payload.*` pour les metadonnees de la reponse
+- `product.*` pour les attributs du produit
+- `release.*` pour les attributs de la release
 
-Usage
-- Export par défaut dans le dossier courant:
-    python export_endoflife_api.py
-- Export vers un chemin précis:
-    python export_endoflife_api.py --output "D:/tmp/endoflife_api_v1_full_export.csv"
-- Changer l'URL de base de l'API:
-    python export_endoflife_api.py --base-url "https://endoflife.date/api/v1"
+Les structures complexes sont conservees dans une colonne JSON compacte et
+aplaties recursivement avec des cles du type `product.identifiers[0].type`
+ou `release.latest.link`.
 
-Format du CSV
-- 1 ligne par release de produit.
-- Colonnes stables:
-  - product
-  - release_index
-- Les autres colonnes sont construites dynamiquement à partir des clés JSON trouvées
-  dans les objets "release" (union de toutes les clés rencontrées).
-- Les structures complexes (liste/dict) sont sérialisées en JSON compact.
+Si deux chemins ne different que par la casse, un suffixe `__dupN` est ajoute
+pour garantir des en-tetes CSV uniques sur les consommateurs case-insensitive.
 """
 
 from __future__ import annotations
@@ -35,10 +26,12 @@ import csv
 import json
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
+
+
+SCALAR_TYPES = (str, int, float, bool)
 
 
 def _http_get_json(url: str, timeout: int = 60) -> Any:
@@ -55,174 +48,264 @@ def _http_get_json(url: str, timeout: int = 60) -> Any:
     return json.loads(payload)
 
 
-def _extract_products_list(products_payload: Any) -> List[Any]:
-    if isinstance(products_payload, list):
-        return products_payload
-
-    if isinstance(products_payload, dict):
-        result = products_payload.get("result")
-        if isinstance(result, list):
-            return result
-
-    return []
-
-
-def _ensure_release_list(product_payload: Any) -> List[Dict[str, Any]]:
-    if isinstance(product_payload, list):
-        return [item for item in product_payload if isinstance(item, dict)]
-
-    if isinstance(product_payload, dict):
-        result = product_payload.get("result")
-        if result is not None:
-            return _ensure_release_list(result)
-
-        candidate_keys = ("releases", "cycles", "data", "result", "items")
-        for key in candidate_keys:
-            value = product_payload.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-
-    return []
+def _json_compact(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _normalize_cell(value: Any) -> str:
     if value is None:
         return ""
-    if isinstance(value, (str, int, float, bool)):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
         return str(value)
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return _json_compact(value)
 
 
-def _error_details(exc: BaseException) -> str:
-    if isinstance(exc, urllib.error.HTTPError):
-        return f"HTTP {exc.code} ({exc.reason})"
-    if isinstance(exc, urllib.error.URLError):
-        return f"Erreur réseau ({exc.reason})"
-    return str(exc)
+def _resolve_column_name(
+    path: str,
+    column_aliases: Dict[str, str],
+    used_column_names: set[str],
+) -> str:
+    existing = column_aliases.get(path)
+    if existing is not None:
+        return existing
+
+    candidate = path
+    if candidate.casefold() in used_column_names:
+        suffix = 2
+        while f"{path}__dup{suffix}".casefold() in used_column_names:
+            suffix += 1
+        candidate = f"{path}__dup{suffix}"
+
+    used_column_names.add(candidate.casefold())
+    column_aliases[path] = candidate
+    return candidate
+
+
+
+def _flatten_value(
+    prefix: str,
+    value: Any,
+    row: Dict[str, str],
+    dynamic_columns: set[str],
+    column_aliases: Dict[str, str],
+    used_column_names: set[str],
+) -> None:
+    column_name = _resolve_column_name(prefix, column_aliases, used_column_names)
+    dynamic_columns.add(column_name)
+
+    if value is None or isinstance(value, SCALAR_TYPES):
+        row[column_name] = _normalize_cell(value)
+        return
+
+    if isinstance(value, dict):
+        row[column_name] = _json_compact(value)
+        for key, child in value.items():
+            _flatten_value(
+                f"{prefix}.{key}",
+                child,
+                row,
+                dynamic_columns,
+                column_aliases,
+                used_column_names,
+            )
+        return
+
+    if isinstance(value, list):
+        row[column_name] = _json_compact(value)
+        for index, child in enumerate(value):
+            _flatten_value(
+                f"{prefix}[{index}]",
+                child,
+                row,
+                dynamic_columns,
+                column_aliases,
+                used_column_names,
+            )
+        return
+
+    row[column_name] = _normalize_cell(value)
+
+
+
+def _extract_full_payload(raw_payload: Any) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    if isinstance(raw_payload, dict):
+        result = raw_payload.get("result")
+        if isinstance(result, list):
+            products = [item for item in result if isinstance(item, dict)]
+            return raw_payload, products
+
+    raise RuntimeError("La reponse de /products/full ne contient pas de liste 'result' exploitable.")
+
 
 
 def _log_info(message: str) -> None:
     print(message, flush=True)
 
 
-def _log_error(message: str) -> None:
-    print(message, file=sys.stderr, flush=True)
+
+def _derive_json_output(csv_output: Path, json_output: str | None) -> Path:
+    if json_output:
+        return Path(json_output)
+    if csv_output.suffix:
+        return csv_output.with_suffix(".json")
+    return Path(str(csv_output) + ".json")
 
 
-def export_endoflife_csv(base_url: str, output_path: Path) -> int:
+
+def export_endoflife_full(base_url: str, csv_output: Path, json_output: Path) -> int:
     base_url = base_url.rstrip("/")
-    products_url = f"{base_url}/products"
+    full_url = f"{base_url}/products/full"
 
-    _log_info(f"[INFO] Récupération de la liste des produits: {products_url}")
-    raw_products_payload = _http_get_json(products_url)
-    products_payload = _extract_products_list(raw_products_payload)
-    if not products_payload:
-        raise RuntimeError("La réponse de /products ne contient aucune liste de produits exploitable.")
-    _log_info(f"[INFO] {len(products_payload)} produits trouvés.")
+    _log_info(f"[INFO] Recuperation du payload complet: {full_url}")
+    raw_payload = _http_get_json(full_url)
+    payload, products = _extract_full_payload(raw_payload)
+    _log_info(f"[INFO] {len(products)} produit(s) trouve(s) dans /products/full.")
+
+    json_output.parent.mkdir(parents=True, exist_ok=True)
+    with json_output.open("w", encoding="utf-8", newline="\n") as json_file:
+        json.dump(payload, json_file, ensure_ascii=False, indent=2)
+        json_file.write("\n")
+    _log_info(f"[INFO] JSON brut ecrit: {json_output}")
 
     rows: List[Dict[str, str]] = []
-    dynamic_columns: set[str] = set()
-    errors: List[str] = []
-    product_count = len(products_payload)
+    dynamic_columns: set[str] = {"product", "release_index"}
+    column_aliases: Dict[str, str] = {}
+    used_column_names = {"product", "release_index"}
 
-    for product_idx, product_item in enumerate(products_payload, start=1):
-        if isinstance(product_item, str):
-            product = product_item
-        elif isinstance(product_item, dict):
-            product = str(
-                product_item.get("slug")
-                or product_item.get("product")
-                or product_item.get("name")
-                or ""
-            ).strip()
-        else:
-            continue
+    payload_metadata = {
+        key: value
+        for key, value in payload.items()
+        if key != "result"
+    }
 
-        if not product:
-            _log_info(f"[{product_idx}/{product_count}] [WARN] Produit ignoré: nom vide.")
-            continue
+    for product_index, product in enumerate(products, start=1):
+        product_name = str(product.get("name") or product.get("label") or "").strip()
+        releases = product.get("releases")
+        releases_list = releases if isinstance(releases, list) else []
 
-        product_encoded = urllib.parse.quote(product, safe="")
-        product_url = f"{base_url}/products/{product_encoded}"
-        _log_info(f"[{product_idx}/{product_count}] [INFO] Téléchargement: {product}")
-        try:
-            product_payload = _http_get_json(product_url)
-        except Exception as exc:  # noqa: BLE001
-            details = _error_details(exc)
-            message = f"[{product_idx}/{product_count}] [ERROR] Échec pour '{product}': {details}"
-            _log_error(message)
-            errors.append(message)
-            continue
-        releases = _ensure_release_list(product_payload)
         _log_info(
-            f"[{product_idx}/{product_count}] [OK] {product}: "
-            f"{len(releases)} release(s) récupérée(s)."
+            f"[{product_index}/{len(products)}] [INFO] Aplatissement de '{product_name or '<sans nom>'}' "
+            f"({len(releases_list)} release(s))."
         )
 
-        for index, release in enumerate(releases, start=1):
-            row: Dict[str, str] = {
-                "product": product,
-                "release_index": str(index),
-            }
-            for key, value in release.items():
-                row[key] = _normalize_cell(value)
-                dynamic_columns.add(key)
-            rows.append(row)
+        base_row: Dict[str, str] = {
+            "product": product_name,
+            "release_index": "",
+        }
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["product", "release_index"] + sorted(dynamic_columns)
+        for key, value in payload_metadata.items():
+            _flatten_value(
+                f"payload.{key}",
+                value,
+                base_row,
+                dynamic_columns,
+                column_aliases,
+                used_column_names,
+            )
 
-    with output_path.open("w", encoding="utf-8", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, extrasaction="ignore", quoting=csv.QUOTE_ALL)
+        for key, value in product.items():
+            if key == "releases":
+                continue
+            _flatten_value(
+                f"product.{key}",
+                value,
+                base_row,
+                dynamic_columns,
+                column_aliases,
+                used_column_names,
+            )
+        _flatten_value(
+            "product.releases_count",
+            len(releases_list),
+            base_row,
+            dynamic_columns,
+            column_aliases,
+            used_column_names,
+        )
+
+        if releases_list:
+            for release_index, release in enumerate(releases_list, start=1):
+                row = dict(base_row)
+                row["release_index"] = str(release_index)
+                _flatten_value(
+                    "release",
+                    release,
+                    row,
+                    dynamic_columns,
+                    column_aliases,
+                    used_column_names,
+                )
+                rows.append(row)
+        else:
+            rows.append(dict(base_row))
+
+    csv_output.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["product", "release_index"] + sorted(
+        column for column in dynamic_columns if column not in {"product", "release_index"}
+    )
+
+    with csv_output.open("w", encoding="utf-8", newline="") as csv_file:
+        writer = csv.DictWriter(
+            csv_file,
+            fieldnames=fieldnames,
+            extrasaction="ignore",
+            quoting=csv.QUOTE_ALL,
+        )
         writer.writeheader()
         writer.writerows(rows)
 
-    if errors:
-        _log_error(
-            f"[WARN] Export terminé avec {len(errors)} erreur(s) produit. "
-            "Voir les messages [ERROR] ci-dessus."
-        )
-    else:
-        _log_info("[INFO] Export terminé sans erreur produit.")
-
+    _log_info(f"[INFO] CSV aplati ecrit: {csv_output}")
     return len(rows)
 
 
+
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Export complet EndOfLife API v1 vers CSV")
+    parser = argparse.ArgumentParser(description="Export complet EndOfLife API v1 (/products/full) vers JSON + CSV")
     parser.add_argument(
         "--base-url",
         default="https://endoflife.date/api/v1",
-        help="URL de base de l'API (défaut: %(default)s)",
+        help="URL de base de l'API (defaut: %(default)s)",
     )
     parser.add_argument(
         "--output",
+        "--csv-output",
+        dest="csv_output",
         default="endoflife_api_v1_full_export.csv",
-        help="Chemin du CSV de sortie (défaut: %(default)s)",
+        help="Chemin du CSV de sortie (defaut: %(default)s)",
+    )
+    parser.add_argument(
+        "--json-output",
+        default="",
+        help="Chemin du JSON brut de sortie (defaut: meme nom que le CSV avec extension .json)",
     )
     return parser
+
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
 
+    csv_output = Path(args.csv_output)
+    json_output = _derive_json_output(csv_output, args.json_output or None)
+
     try:
-        row_count = export_endoflife_csv(args.base_url, Path(args.output))
+        row_count = export_endoflife_full(args.base_url, csv_output, json_output)
     except urllib.error.HTTPError as exc:
         print(f"Erreur HTTP {exc.code} pendant l'export: {exc}", file=sys.stderr)
         return 1
     except urllib.error.URLError as exc:
-        print(f"Erreur réseau pendant l'export: {exc}", file=sys.stderr)
+        print(f"Erreur reseau pendant l'export: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:  # noqa: BLE001
         print(f"Erreur inattendue: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Export terminé: {args.output} ({row_count} lignes).")
+    print(f"Export termine: {csv_output} ({row_count} lignes). JSON: {json_output}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

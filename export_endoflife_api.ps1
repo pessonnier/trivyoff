@@ -1,22 +1,27 @@
-﻿<#
+<#
 .SYNOPSIS
-export_endoflife_api_v1.ps1 - Export complet de l'API EndOfLife v1 au format CSV.
+export_endoflife_api_v1.ps1 - Export complet de l'API EndOfLife v1 (/products/full).
 
 .DESCRIPTION
-Ce script interroge l'API EndOfLife v1 en deux etapes:
-1) recuperation de la liste des produits via /products
-2) recuperation des releases de chaque produit via /products/{product}
+Ce script recupere le payload `/products/full`, ecrit le JSON brut et produit
+un CSV aplati avec une ligne par release.
 
-Le resultat est aplati dans un seul CSV (1 ligne par release), avec:
-- colonnes fixes: product, release_index
-- colonnes dynamiques: union de toutes les cles JSON rencontrees dans les releases
+Les colonnes du CSV sont prefixees pour eviter les collisions :
+- payload.* : metadonnees de la reponse
+- product.* : attributs du produit
+- release.* : attributs de la release
 
-Les valeurs complexes (objets/listes) sont serialisees en JSON compact.
+Les objets et tableaux sont conserves en JSON compact et aplatits recursivement,
+par exemple `product.identifiers[0].type` ou `release.latest.link`.
+
+Si deux chemins ne different que par la casse, un suffixe `__dupN` est ajoute
+pour garantir des en-tetes CSV uniques sur les consommateurs case-insensitive.
 #>
 
 [CmdletBinding()]
 param(
   [string]$OutputCsv = "endoflife_api_v1_full_export.csv",
+  [string]$OutputJson = "",
   [string]$ApiBaseUrl = "https://endoflife.date/api/v1"
 )
 
@@ -24,7 +29,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "Continue"
 
-# Force UTF-8 for the attached console and for file output.
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 try {
   & $env:ComSpec /d /c chcp 65001 > $null
@@ -38,7 +42,7 @@ $OutputEncoding = $Utf8NoBom
 function Invoke-ApiJson {
   param([Parameter(Mandatory = $true)][string]$Url)
 
-  return Invoke-RestMethod -Method Get -Uri $Url -Headers @{
+  Invoke-RestMethod -Method Get -Uri $Url -Headers @{
     "User-Agent" = "export_endoflife_api_v1.ps1"
     "Accept"     = "application/json"
   }
@@ -65,11 +69,28 @@ function Convert-ToCellValue {
     return ""
   }
 
-  if ($Value -is [string] -or $Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal] -or $Value -is [bool]) {
+  if ($Value -is [bool]) {
+    if ($Value) {
+      return "true"
+    }
+    return "false"
+  }
+
+  if (
+    $Value -is [string] -or
+    $Value -is [char] -or
+    $Value -is [byte] -or
+    $Value -is [int16] -or
+    $Value -is [int] -or
+    $Value -is [int64] -or
+    $Value -is [decimal] -or
+    $Value -is [single] -or
+    $Value -is [double]
+  ) {
     return [string]$Value
   }
 
-  return ($Value | ConvertTo-Json -Compress -Depth 20)
+  return ($Value | ConvertTo-Json -Compress -Depth 100)
 }
 
 function Get-ObjectPropertyValue {
@@ -86,7 +107,6 @@ function Get-ObjectPropertyValue {
     if ($Object.Contains($Name)) {
       return $Object[$Name]
     }
-
     return $null
   }
 
@@ -97,245 +117,220 @@ function Get-ObjectPropertyValue {
   return $null
 }
 
-function Convert-ToObjectArray {
-  param($Value)
+function Get-ObjectPropertyNames {
+  param($Object)
 
-  if ($null -eq $Value -or $Value -is [string]) {
+  if ($null -eq $Object) {
     return @()
   }
 
-  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [pscustomobject]) -and -not ($Value -is [hashtable]) -and -not ($Value -is [System.Collections.IDictionary])) {
+  if ($Object -is [System.Collections.IDictionary]) {
+    return @($Object.Keys | ForEach-Object { [string]$_ })
+  }
+
+  return @($Object.PSObject.Properties.Name)
+}
+
+function Test-IsEnumerable {
+  param($Value)
+
+  return (
+    $null -ne $Value -and
+    $Value -is [System.Collections.IEnumerable] -and
+    -not ($Value -is [string]) -and
+    -not ($Value -is [pscustomobject]) -and
+    -not ($Value -is [System.Collections.IDictionary])
+  )
+}
+
+function Convert-ToObjectArray {
+  param($Value)
+
+  if ($null -eq $Value) {
+    return @()
+  }
+
+  if (Test-IsEnumerable -Value $Value) {
     return @($Value)
   }
 
   return @($Value)
 }
 
-function Get-ReleaseObjects {
-  param($Payload)
-
-  if ($null -eq $Payload) {
-    return @()
-  }
-
-  if ($Payload -is [System.Collections.IEnumerable] -and -not ($Payload -is [string]) -and -not ($Payload -is [pscustomobject]) -and -not ($Payload -is [hashtable]) -and -not ($Payload -is [System.Collections.IDictionary])) {
-    return @($Payload | Where-Object {
-      $_ -is [pscustomobject] -or $_ -is [hashtable] -or $_ -is [System.Collections.IDictionary]
-    })
-  }
-
-  $containers = New-Object System.Collections.Generic.List[object]
-  $containers.Add($Payload) | Out-Null
-
-  foreach ($rootKey in @("result", "data")) {
-    $rootValue = Get-ObjectPropertyValue -Object $Payload -Name $rootKey
-    if ($null -ne $rootValue) {
-      $containers.Add($rootValue) | Out-Null
-    }
-  }
-
-  foreach ($container in $containers) {
-    foreach ($candidate in (Convert-ToObjectArray -Value $container)) {
-      if ($candidate -is [pscustomobject] -or $candidate -is [hashtable] -or $candidate -is [System.Collections.IDictionary]) {
-        foreach ($key in @("releases", "cycles", "items")) {
-          $value = Get-ObjectPropertyValue -Object $candidate -Name $key
-          if ($null -eq $value -or $value -is [string]) {
-            continue
-          }
-
-          $items = @((Convert-ToObjectArray -Value $value) | Where-Object {
-            $_ -is [pscustomobject] -or $_ -is [hashtable] -or $_ -is [System.Collections.IDictionary]
-          })
-          if ($items.Count -gt 0) {
-            return $items
-          }
-        }
-      }
-    }
-  }
-
-  return @()
-}
-
-function Get-ProductPayload {
+function Resolve-ColumnName {
   param(
-    [Parameter(Mandatory = $true)][string]$ApiBaseUrl,
-    [Parameter(Mandatory = $true)][string]$Product,
-    [string]$ProductUri
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][hashtable]$ColumnAliases,
+    [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[string]]$UsedColumnNames
   )
 
-  $productEncoded = [uri]::EscapeDataString($Product)
-  $candidateUrls = @(
-    $ProductUri,
-    "$ApiBaseUrl/products/$productEncoded/",
-    "$ApiBaseUrl/products/$productEncoded",
-    "$ApiBaseUrl/products/$productEncoded/releases",
-    "$ApiBaseUrl/$productEncoded"
-  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-
-  $lastError = $null
-  foreach ($candidateUrl in $candidateUrls) {
-    try {
-      return Invoke-ApiJson -Url $candidateUrl
-    }
-    catch {
-      $lastError = $_
-    }
+  if ($ColumnAliases.ContainsKey($Path)) {
+    return [string]$ColumnAliases[$Path]
   }
 
-  if ($null -ne $lastError) {
-    throw $lastError
+  $candidate = $Path
+  if (-not $UsedColumnNames.Add($candidate.ToLowerInvariant())) {
+    $suffix = 2
+    do {
+      $candidate = "{0}__dup{1}" -f $Path, $suffix
+      $suffix++
+    } while (-not $UsedColumnNames.Add($candidate.ToLowerInvariant()))
   }
 
-  throw ("Impossible de recuperer les releases pour '{0}'." -f $Product)
+  $ColumnAliases[$Path] = $candidate
+  return $candidate
 }
 
-function Get-ProductList {
-  param($Payload)
+function Set-FlattenedValue {
+  param(
+    [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Row,
+    [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[string]]$DynamicColumns,
+    [Parameter(Mandatory = $true)][hashtable]$ColumnAliases,
+    [Parameter(Mandatory = $true)][System.Collections.Generic.HashSet[string]]$UsedColumnNames,
+    [Parameter(Mandatory = $true)][string]$Prefix,
+    $Value
+  )
 
-  if ($null -eq $Payload) {
-    return @()
+  $columnName = Resolve-ColumnName -Path $Prefix -ColumnAliases $ColumnAliases -UsedColumnNames $UsedColumnNames
+  $null = $DynamicColumns.Add($columnName)
+
+  if (
+    $null -eq $Value -or
+    $Value -is [string] -or
+    $Value -is [char] -or
+    $Value -is [byte] -or
+    $Value -is [int16] -or
+    $Value -is [int] -or
+    $Value -is [int64] -or
+    $Value -is [decimal] -or
+    $Value -is [single] -or
+    $Value -is [double] -or
+    $Value -is [bool]
+  ) {
+    $Row[$columnName] = Convert-ToCellValue -Value $Value
+    return
   }
 
-  foreach ($candidate in (Convert-ToObjectArray -Value $Payload)) {
-    if ($candidate -is [string]) {
-      return @($Payload)
+  if ($Value -is [System.Collections.IDictionary] -or $Value -is [pscustomobject]) {
+    $Row[$columnName] = Convert-ToCellValue -Value $Value
+    foreach ($name in Get-ObjectPropertyNames -Object $Value) {
+      $childValue = Get-ObjectPropertyValue -Object $Value -Name $name
+      Set-FlattenedValue -Row $Row -DynamicColumns $DynamicColumns -ColumnAliases $ColumnAliases -UsedColumnNames $UsedColumnNames -Prefix ("{0}.{1}" -f $Prefix, $name) -Value $childValue
     }
-
-    if ($candidate -is [pscustomobject] -or $candidate -is [hashtable] -or $candidate -is [System.Collections.IDictionary]) {
-      foreach ($key in @("products", "items", "data", "result")) {
-        $value = Get-ObjectPropertyValue -Object $candidate -Name $key
-        if ($null -ne $value -and -not ($value -is [string])) {
-          return @(Convert-ToObjectArray -Value $value)
-        }
-      }
-    }
+    return
   }
 
-  return @()
+  if (Test-IsEnumerable -Value $Value) {
+    $items = @($Value)
+    $Row[$columnName] = Convert-ToCellValue -Value $Value
+    for ($index = 0; $index -lt $items.Count; $index++) {
+      Set-FlattenedValue -Row $Row -DynamicColumns $DynamicColumns -ColumnAliases $ColumnAliases -UsedColumnNames $UsedColumnNames -Prefix ("{0}[{1}]" -f $Prefix, $index) -Value $items[$index]
+    }
+    return
+  }
+
+  $Row[$columnName] = Convert-ToCellValue -Value $Value
 }
 
-function Resolve-ProductName {
-  param($ProductItem)
+function Copy-OrderedDictionary {
+  param([Parameter(Mandatory = $true)][System.Collections.IDictionary]$Source)
 
-  if ($ProductItem -is [string]) {
-    return $ProductItem.Trim()
+  $target = [ordered]@{}
+  foreach ($key in $Source.Keys) {
+    $target[$key] = $Source[$key]
   }
-
-  if ($ProductItem -is [pscustomobject] -or $ProductItem -is [hashtable] -or $ProductItem -is [System.Collections.IDictionary]) {
-    foreach ($key in @("slug", "product", "name", "id")) {
-      $value = Get-ObjectPropertyValue -Object $ProductItem -Name $key
-      if ($null -ne $value) {
-        $candidate = [string]$value
-        if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-          return $candidate.Trim()
-        }
-      }
-    }
-  }
-
-  return ""
-}
-
-function Resolve-ProductUri {
-  param($ProductItem)
-
-  if ($ProductItem -is [pscustomobject] -or $ProductItem -is [hashtable] -or $ProductItem -is [System.Collections.IDictionary]) {
-    $value = Get-ObjectPropertyValue -Object $ProductItem -Name "uri"
-    if ($null -ne $value) {
-      $candidate = [string]$value
-      if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-        return $candidate.Trim()
-      }
-    }
-  }
-
-  return ""
-}
-
-function Get-CollectionCount {
-  param($Value)
-
-  if ($null -eq $Value) {
-    return 0
-  }
-
-  if ($Value -is [System.Collections.ICollection]) {
-    return $Value.Count
-  }
-
-  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [string])) {
-    return @($Value).Count
-  }
-
-  return 1
+  return $target
 }
 
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
-$productsUrl = "$ApiBaseUrl/products"
-
-$productsPayload = Invoke-ApiJson -Url $productsUrl
-$products = Get-ProductList -Payload $productsPayload
-$productsCount = Get-CollectionCount -Value $products
-if ($productsCount -eq 0) {
-  $payloadType = if ($null -eq $productsPayload) { "null" } else { $productsPayload.GetType().FullName }
-  throw ("La reponse de /products ne contient pas de liste de produits reconnue. Type recu: {0}" -f $payloadType)
+if ([string]::IsNullOrWhiteSpace($OutputJson)) {
+  $OutputJson = [System.IO.Path]::ChangeExtension($OutputCsv, ".json")
 }
-Write-Host ("[INFO] {0} produits trouves." -f $productsCount)
+
+$fullUrl = "$ApiBaseUrl/products/full"
+Write-Host "[INFO] Recuperation du payload complet: $fullUrl"
+
+try {
+  $payload = Invoke-ApiJson -Url $fullUrl
+}
+catch {
+  $details = Get-ErrorDetails -Exception $_
+  throw ("Echec de recuperation de /products/full: {0}" -f $details)
+}
+
+$products = @(Convert-ToObjectArray -Value (Get-ObjectPropertyValue -Object $payload -Name "result") | Where-Object { $_ -is [pscustomobject] -or $_ -is [System.Collections.IDictionary] })
+if ($products.Count -eq 0) {
+  $payloadType = if ($null -eq $payload) { "null" } else { $payload.GetType().FullName }
+  throw ("La reponse de /products/full ne contient pas de liste 'result' exploitable. Type recu: {0}" -f $payloadType)
+}
+Write-Host ("[INFO] {0} produit(s) trouves dans /products/full." -f $products.Count)
+
+$jsonDir = Split-Path -Parent $OutputJson
+if (-not [string]::IsNullOrWhiteSpace($jsonDir)) {
+  New-Item -ItemType Directory -Path $jsonDir -Force | Out-Null
+}
+$jsonText = $payload | ConvertTo-Json -Depth 100
+[System.IO.File]::WriteAllText($OutputJson, ($jsonText + [Environment]::NewLine), $Utf8NoBom)
+Write-Host "[INFO] JSON brut ecrit: $OutputJson"
 
 $rows = New-Object System.Collections.Generic.List[object]
 $dynamicColumns = New-Object System.Collections.Generic.HashSet[string]
-$errors = New-Object System.Collections.Generic.List[string]
-$totalProducts = $productsCount
+$columnAliases = @{}
+$usedColumnNames = New-Object System.Collections.Generic.HashSet[string]
+$null = $dynamicColumns.Add("product")
+$null = $dynamicColumns.Add("release_index")
+$null = $usedColumnNames.Add("product")
+$null = $usedColumnNames.Add("release_index")
+
+$payloadPropertyNames = @(Get-ObjectPropertyNames -Object $payload | Where-Object { $_ -ne "result" })
+$totalProducts = $products.Count
 $currentProduct = 0
 
 foreach ($productItem in $products) {
   $currentProduct++
-  $product = Resolve-ProductName -ProductItem $productItem
-  $productUri = Resolve-ProductUri -ProductItem $productItem
+  $productName = [string](Get-ObjectPropertyValue -Object $productItem -Name "name")
+  if ([string]::IsNullOrWhiteSpace($productName)) {
+    $productName = [string](Get-ObjectPropertyValue -Object $productItem -Name "label")
+  }
+  $productName = $productName.Trim()
 
-  if ([string]::IsNullOrWhiteSpace($product)) {
-    $productItemJson = Convert-ToCellValue -Value $productItem
-    if ($productItemJson.Length -gt 240) {
-      $productItemJson = $productItemJson.Substring(0, 240) + "..."
-    }
-    Write-Warning ("[{0}/{1}] Produit ignore (nom vide). Item brut: {2}" -f $currentProduct, $totalProducts, $productItemJson)
-    continue
+  $releasesValue = Get-ObjectPropertyValue -Object $productItem -Name "releases"
+  $releases = @(Convert-ToObjectArray -Value $releasesValue | Where-Object { $_ -is [pscustomobject] -or $_ -is [System.Collections.IDictionary] })
+
+  Write-Progress -Activity "Export EndOfLife API" -Status ("Produit {0}/{1}: {2}" -f $currentProduct, $totalProducts, $productName) -PercentComplete (($currentProduct / [Math]::Max($totalProducts, 1)) * 100)
+  Write-Host ("[{0}/{1}] [INFO] Aplatissement de '{2}' ({3} release(s))." -f $currentProduct, $totalProducts, $productName, $releases.Count)
+
+  $baseRow = [ordered]@{
+    product       = $productName
+    release_index = ""
   }
 
-  Write-Progress -Activity "Export EndOfLife API" -Status ("Produit {0}/{1}: {2}" -f $currentProduct, $totalProducts, $product) -PercentComplete (($currentProduct / $totalProducts) * 100)
-  Write-Host ("[{0}/{1}] [INFO] Extraction des releases pour '{2}'..." -f $currentProduct, $totalProducts, $product)
-
-  try {
-    $productPayload = Get-ProductPayload -ApiBaseUrl $ApiBaseUrl -Product $product -ProductUri $productUri
-  }
-  catch {
-    $details = Get-ErrorDetails -Exception $_
-    $message = ("[{0}/{1}] [ERROR] Echec pour '{2}': {3}" -f $currentProduct, $totalProducts, $product, $details)
-    Write-Error $message
-    $errors.Add($message) | Out-Null
-    continue
+  foreach ($name in $payloadPropertyNames) {
+    $value = Get-ObjectPropertyValue -Object $payload -Name $name
+    Set-FlattenedValue -Row $baseRow -DynamicColumns $dynamicColumns -ColumnAliases $columnAliases -UsedColumnNames $usedColumnNames -Prefix ("payload.{0}" -f $name) -Value $value
   }
 
-  $releases = Get-ReleaseObjects -Payload $productPayload
-  $releasesCount = Get-CollectionCount -Value $releases
-  Write-Host ("[{0}/{1}] [OK] {2}: {3} release(s) recuperee(s)." -f $currentProduct, $totalProducts, $product, $releasesCount)
-
-  $idx = 0
-  foreach ($release in $releases) {
-    $idx++
-
-    $line = [ordered]@{
-      product       = $product
-      release_index = [string]$idx
+  foreach ($name in Get-ObjectPropertyNames -Object $productItem) {
+    if ($name -eq "releases") {
+      continue
     }
+    $value = Get-ObjectPropertyValue -Object $productItem -Name $name
+    Set-FlattenedValue -Row $baseRow -DynamicColumns $dynamicColumns -ColumnAliases $columnAliases -UsedColumnNames $usedColumnNames -Prefix ("product.{0}" -f $name) -Value $value
+  }
+  Set-FlattenedValue -Row $baseRow -DynamicColumns $dynamicColumns -ColumnAliases $columnAliases -UsedColumnNames $usedColumnNames -Prefix "product.releases_count" -Value $releases.Count
 
-    foreach ($prop in $release.PSObject.Properties) {
-      $line[$prop.Name] = Convert-ToCellValue -Value $prop.Value
-      $null = $dynamicColumns.Add($prop.Name)
+  if ($releases.Count -gt 0) {
+    $releaseIndex = 0
+    foreach ($release in $releases) {
+      $releaseIndex++
+      $row = Copy-OrderedDictionary -Source $baseRow
+      $row["release_index"] = [string]$releaseIndex
+      Set-FlattenedValue -Row $row -DynamicColumns $dynamicColumns -ColumnAliases $columnAliases -UsedColumnNames $usedColumnNames -Prefix "release" -Value $release
+      $rows.Add([pscustomobject]$row) | Out-Null
     }
-
-    $rows.Add([pscustomobject]$line)
+  }
+  else {
+    $rows.Add([pscustomobject](Copy-OrderedDictionary -Source $baseRow)) | Out-Null
   }
 }
 
@@ -346,31 +341,17 @@ if (-not [string]::IsNullOrWhiteSpace($outputDir)) {
   New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 }
 
-$finalColumns = @("product", "release_index") + @($dynamicColumns | Sort-Object)
+$finalColumns = @("product", "release_index") + @($dynamicColumns | Where-Object { $_ -notin @("product", "release_index") } | Sort-Object)
 
 if ($rows.Count -gt 0) {
   $csvLines = $rows |
     Select-Object -Property $finalColumns |
     ConvertTo-Csv -NoTypeInformation
-  [System.IO.File]::WriteAllLines(
-    $OutputCsv,
-    $csvLines,
-    [System.Text.UTF8Encoding]::new($true)
-  )
+  [System.IO.File]::WriteAllLines($OutputCsv, $csvLines, [System.Text.UTF8Encoding]::new($true))
 }
 else {
-  [System.IO.File]::WriteAllText(
-    $OutputCsv,
-    (($finalColumns -join ",") + [Environment]::NewLine),
-    [System.Text.UTF8Encoding]::new($true)
-  )
+  [System.IO.File]::WriteAllText($OutputCsv, (($finalColumns -join ",") + [Environment]::NewLine), [System.Text.UTF8Encoding]::new($true))
 }
 
-if ($errors.Count -gt 0) {
-  Write-Warning ("Export termine avec {0} erreur(s) produit. Consultez les messages [ERROR] ci-dessus." -f $errors.Count)
-}
-else {
-  Write-Host "[INFO] Export termine sans erreur produit."
-}
-
-Write-Host "Export termine: $OutputCsv ($($rows.Count) lignes)."
+Write-Host "[INFO] CSV aplati ecrit: $OutputCsv"
+Write-Host "Export termine: $OutputCsv ($($rows.Count) lignes). JSON: $OutputJson"

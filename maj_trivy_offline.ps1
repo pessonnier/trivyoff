@@ -146,17 +146,18 @@ Références documentaires
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -ExportDir "D:\bureau\trivy\out"
 
 .EXAMPLE
-# Exporter l'API EndOfLife v1 en CSV via PowerShell
+# Exporter l'API EndOfLife v1 en JSON + CSV via PowerShell
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -ExportEndOfLifeApiCsv
 
 .EXAMPLE
-# Exporter l'API EndOfLife v1 en CSV via Python et chemin personnalisé
+# Exporter l'API EndOfLife v1 en JSON + CSV via Python et chemins personnalises
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" `
   -ExportEndOfLifeApiCsv -EndOfLifeExportImplementation Python `
-  -EndOfLifeCsvPath "D:\bureau\trivy\out\endoflife_api_v1_full_export.csv"
+  -EndOfLifeCsvPath "D:\bureau\trivy\out\endoflife_api_v1_full_export.csv" `
+  -EndOfLifeJsonPath "D:\bureau\trivy\out\endoflife_api_v1_full_export.json"
 
 .EXAMPLE
-# Désactiver l'export EndOfLife CSV
+# Desactiver l'export EndOfLife JSON/CSV
 .\maj_trivy_offline.ps1 -ExtraRootDir "D:\bureau\trivy\extra" -DisableEndOfLifeApiCsv
 #>
 
@@ -202,8 +203,10 @@ param(
 
   [string]$EndOfLifeCsvPath = "",
 
+  [string]$EndOfLifeJsonPath = "",
+
   [ValidateSet("PowerShell", "Python")]
-  [string]$EndOfLifeExportImplementation = "PowerShell",
+  [string]$EndOfLifeExportImplementation = "Python",
 
   [string]$EndOfLifeApiBaseUrl = "https://endoflife.date/api/v1"
 )
@@ -223,6 +226,7 @@ $OutputEncoding = $Utf8NoBom
 
 # Préfixe d’arguments pour Python (ex: @('-3') si utilisation de py.exe)
 $script:PythonPrefixArgs = @()
+$PythonWasExplicitlyRequested = (-not [string]::IsNullOrWhiteSpace($PythonExePath)) -or [bool]$UsePyLauncher
 
 # --- Dossier du script (robuste) ---
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot }
@@ -813,20 +817,6 @@ try {
   if (-not (Test-Path -LiteralPath $ExtraRootDir)) { throw "ExtraRootDir introuvable: $ExtraRootDir" }
   if (-not (Get-Item -LiteralPath $ExtraRootDir).PSIsContainer) { throw "ExtraRootDir n'est pas un dossier: $ExtraRootDir" }
 
-  $pyInfo = Resolve-Python -PythonExePath $PythonExePath -UsePyLauncher:$UsePyLauncher
-  $PythonExe = $pyInfo.Exe
-  $script:PythonPrefixArgs = $pyInfo.PrefixArgs
-  Log "Python: $PythonExe"
-  if ($script:PythonPrefixArgs -and $script:PythonPrefixArgs.Count -gt 0) {
-    Log ("Python prefix args: " + ($script:PythonPrefixArgs -join ' '))
-  }
-
-  # validation rapide Python (utile si python.exe est un alias Store)
-  $pyVerArgs = @()
-  if ($script:PythonPrefixArgs -and $script:PythonPrefixArgs.Count -gt 0) { $pyVerArgs += $script:PythonPrefixArgs }
-  $pyVerArgs += @("-c","import sys;print(sys.version);print(sys.executable)")
-  Run-ExternalLogged -Label "python_version" -Exe $PythonExe -ArgList $pyVerArgs -WorkDir $ScriptDir -Work $Work
-
   Ensure-TarWithPermission
   $tarExe = Get-TarExePath
   $sevenZipExe = Get-7ZipExePath
@@ -855,6 +845,48 @@ try {
       $archiveMode = "python"
     }
     Log "Archive mode auto-selected: $archiveMode (ordre: 7zip > tar > python)"
+  }
+
+  $PythonExe = $null
+  $effectiveEndOfLifeImplementation = $EndOfLifeExportImplementation
+  $pythonResolutionError = $null
+  $shouldProbePython = $PythonWasExplicitlyRequested -or $archiveMode -eq "python" -or $EndOfLifeExportImplementation -eq "Python"
+
+  if ($shouldProbePython) {
+    try {
+      $pyInfo = Resolve-Python -PythonExePath $PythonExePath -UsePyLauncher:$UsePyLauncher
+      $PythonExe = $pyInfo.Exe
+      $script:PythonPrefixArgs = $pyInfo.PrefixArgs
+      Log "Python: $PythonExe"
+      if ($script:PythonPrefixArgs -and $script:PythonPrefixArgs.Count -gt 0) {
+        Log ("Python prefix args: " + ($script:PythonPrefixArgs -join ' '))
+      }
+
+      # validation rapide Python (utile si python.exe est un alias Store)
+      $pyVerArgs = @()
+      if ($script:PythonPrefixArgs -and $script:PythonPrefixArgs.Count -gt 0) { $pyVerArgs += $script:PythonPrefixArgs }
+      $pyVerArgs += @("-c","import sys;print(sys.version);print(sys.executable)")
+      Run-ExternalLogged -Label "python_version" -Exe $PythonExe -ArgList $pyVerArgs -WorkDir $ScriptDir -Work $Work
+    }
+    catch {
+      $pythonResolutionError = $_.Exception.Message
+      if ($PythonWasExplicitlyRequested) {
+        throw
+      }
+      Log ("Python indisponible: {0}" -f $pythonResolutionError)
+    }
+  } else {
+    Log "Python non requis pour la configuration choisie."
+  }
+
+  if ($archiveMode -eq "python" -and -not $PythonExe) {
+    throw ("Python requis pour le mode d'archive/extraction 'python', mais introuvable. " +
+      "Installe Python, indique -PythonExePath, utilise -UsePyLauncher, ou force un mode sans Python via -UseTarForArchive ou -Use7ZipForArchive.")
+  }
+
+  if ($effectiveEndOfLifeImplementation -eq "Python" -and -not $PythonExe) {
+    $effectiveEndOfLifeImplementation = "PowerShell"
+    Log "Python indisponible pour l'export EndOfLife API v1: bascule automatique vers l'implementation PowerShell."
   }
 
   $IncludeSeedEffective = $IncludeSeedMisconfig -or $NoCleanupMisconfigSeed
@@ -1081,16 +1113,22 @@ spec:
       $EndOfLifeCsvPath = [System.IO.Path]::GetFullPath($EndOfLifeCsvPath)
     }
 
+    if ([string]::IsNullOrWhiteSpace($EndOfLifeJsonPath)) {
+      $EndOfLifeJsonPath = [System.IO.Path]::ChangeExtension($EndOfLifeCsvPath, ".json")
+    } else {
+      $EndOfLifeJsonPath = [System.IO.Path]::GetFullPath($EndOfLifeJsonPath)
+    }
+
     $eolPsScript = Join-Path $ScriptDir "export_endoflife_api.ps1"
     $eolPyScript = Join-Path $ScriptDir "export_endoflife_api.py"
 
-    switch ($EndOfLifeExportImplementation) {
+    switch ($effectiveEndOfLifeImplementation) {
       "Python" {
         if (-not (Test-Path -LiteralPath $eolPyScript)) {
           throw "Script introuvable: $eolPyScript"
         }
-        Log "Export EndOfLife API v1 via Python -> $EndOfLifeCsvPath"
-        $args = @($script:PythonPrefixArgs + @($eolPyScript, "--base-url", $EndOfLifeApiBaseUrl, "--output", $EndOfLifeCsvPath))
+        Log "Export EndOfLife API v1 via Python -> CSV: $EndOfLifeCsvPath | JSON: $EndOfLifeJsonPath"
+        $args = @($script:PythonPrefixArgs + @($eolPyScript, "--base-url", $EndOfLifeApiBaseUrl, "--output", $EndOfLifeCsvPath, "--json-output", $EndOfLifeJsonPath))
         Run-ExternalLogged -Label "Export endOfLife en Python" -Exe $PythonExe -ArgList $args -WorkDir $ScriptDir -Work $Work
         break
       }
@@ -1098,13 +1136,14 @@ spec:
         if (-not (Test-Path -LiteralPath $eolPsScript)) {
           throw "Script introuvable: $eolPsScript"
         }
-        Log "Export EndOfLife API v1 via PowerShell -> $EndOfLifeCsvPath"
+        Log "Export EndOfLife API v1 via PowerShell -> CSV: $EndOfLifeCsvPath | JSON: $EndOfLifeJsonPath"
         Run-ExternalLogged -Label "Export endOfLife en PowerShell" -Exe "powershell.exe" -ArgList @(
           "-NoProfile",
           "-ExecutionPolicy", "Bypass",
           "-File", $eolPsScript,
           "-ApiBaseUrl", $EndOfLifeApiBaseUrl,
-          "-OutputCsv", $EndOfLifeCsvPath
+          "-OutputCsv", $EndOfLifeCsvPath,
+          "-OutputJson", $EndOfLifeJsonPath
         ) -WorkDir $ScriptDir -Work $Work
         break
       }

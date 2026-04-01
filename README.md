@@ -8,6 +8,7 @@ Ce dépôt contient des scripts pour **préparer un bundle Trivy offline** et **
 - `trivy_scan_1.2.2.sh` : wrapper Linux pour exécuter un scan Trivy offline et produire plusieurs formats de sortie.  
 - `trivy_scan_1.3.1.bat` : wrapper Windows pour scanner un chemin ou tous les disques locaux.  
 - `export_windows_patch_history.ps1` : exporte l’historique des patchs Windows au format CSV (utilisé par le script `.bat`).
+- `export_endoflife_api.py` / `export_endoflife_api.ps1` : exportent `https://endoflife.date/api/v1/products/full` en JSON brut et en CSV aplati (attributs produit + release, y compris `identifiers`).
 
 ## Prérequis
 
@@ -16,6 +17,7 @@ Ce dépôt contient des scripts pour **préparer un bundle Trivy offline** et **
 - Windows + PowerShell 5.1+
 - Accès internet (pour télécharger Trivy et les bases lors de la préparation)
 - Python disponible (`python` ou `py.exe`), ou préciser `-PythonExePath`
+  Python reste optionnel si `tar.exe` ou `7z.exe` est disponible pour l'archive, et l'export EndOfLife bascule alors automatiquement vers PowerShell.
 
 ### Pour exécuter les scans offline
 
@@ -75,6 +77,7 @@ Script : `maj_trivy_offline.ps1`
 > Les switches `-UseTarForArchive`, `-Use7ZipForArchive` et `-UsePythonForArchive` sont mutuellement exclusifs.  
 > Si aucun n’est fourni, le mode est choisi automatiquement dans l’ordre : **7zip**, puis **tar**, puis **python**.
 > Ce même mode (forcé ou auto) est aussi utilisé pour **l’extraction des assets release Trivy** (`Windows-64bit.zip` et `Linux-64bit.tar.gz`).
+> Si Python est absent, le script ne bloque plus tant qu'un mode `7zip` ou `tar` est disponible. L'export EndOfLife est alors exécuté via PowerShell.
 
 ## 2) Scanner en offline sous Linux
 
