@@ -30,7 +30,9 @@ rem       puis scan disque par disque.
 rem     - Avec -c/--chemin: un seul scan est execute sur le chemin fourni.
 rem
 rem  4) Notes Windows
-rem     - Pour le mode rootfs, la commande Trivy utilise "filesystem".
+rem     - En mode rootfs, la commande Trivy est resolue par cible:
+rem       * racine de disque (ex: C:\, D:\, C:\.) ou scan global => rootfs
+rem       * sous-repertoire explicite => bascule en filesystem avec trace console/log
 rem     - Pour un scan de lecteur (ex: C:), le chemin est force en "C:\."
 rem       pour eviter les problemes de parsing de chemin.
 rem ==========================================================
@@ -105,10 +107,9 @@ if /I "%SCAN_MODE%"=="image" (
 )
 
 rem ==========================================================
-rem  IMPORTANT Windows: rootfs => on scanne en "filesystem"
+rem  Commande Trivy resolue par cible dans :scan_target
 rem ==========================================================
-set "TRIVY_CMD=%SCAN_MODE%"
-if /I "%SCAN_MODE%"=="rootfs" set "TRIVY_CMD=filesystem"
+set "TRIVY_CMD=auto"
 
 rem ==========================================================
 rem  Prepare cache dir
@@ -125,7 +126,7 @@ set "GLOBAL_LOG=%PROJECT_NAME%.%DT%.%HN%.trivy_scan.global.log"
 >>"%GLOBAL_LOG%" echo DateTime=%DT% Host=%HN%
 >>"%GLOBAL_LOG%" echo TRIVY_DIR=%TRIVY_DIR%
 >>"%GLOBAL_LOG%" echo CACHE_DIR=%CACHE_DIR%
->>"%GLOBAL_LOG%" echo SCAN_MODE=%SCAN_MODE%  TRIVY_CMD=%TRIVY_CMD%
+>>"%GLOBAL_LOG%" echo SCAN_MODE=%SCAN_MODE%  TRIVY_CMD=%TRIVY_CMD% ^(resolved per target^)
 >>"%GLOBAL_LOG%" echo PARAM=%PARAM%
 >>"%GLOBAL_LOG%" echo ==========================================================
 
@@ -204,16 +205,20 @@ set "LOGFILE=%PROJECT_NAME%.%DT%.%HN%.%TARGET_LABEL%.trivy_scan.log"
 set "FILEPREFIX=%PROJECT_NAME%_%HN%.%DT%.%SCAN_MODE%.%TARGET_LABEL%"
 set "ARCHIVE_NAME=%PROJECT_NAME%%SRC%_%DT%_%HN%_%TARGET_LABEL%.zip"
 set "PATCHFILE=%FILEPREFIX%.patch.csv"
+call :resolve_trivy_cmd "%SCAN_MODE%" "%SCAN_PATH%"
 
 echo.
 echo --- Cible %TARGET_LABEL% ---
 echo SCAN_PATH=[%SCAN_PATH%]
+echo TRIVY_CMD=[%TRIVY_CMD%]
 echo LOGFILE=[%LOGFILE%]
 echo FILEPREFIX=[%FILEPREFIX%]
 echo ARCHIVE_NAME=[%ARCHIVE_NAME%]
 echo PATCHFILE=[%PATCHFILE%]
+if defined TRIVY_SWITCH_MSG echo %TRIVY_SWITCH_MSG%
 
 >>"%GLOBAL_LOG%" echo --- Cible %TARGET_LABEL% --- LOG=%LOGFILE% ZIP=%ARCHIVE_NAME%
+if defined TRIVY_SWITCH_MSG >>"%GLOBAL_LOG%" echo %TARGET_LABEL% : %TRIVY_SWITCH_MSG%
 
 >>"%LOGFILE%" echo ==========================================================
 >>"%LOGFILE%" echo Debut analyse Trivy cible=%TARGET_LABEL% path="%SCAN_PATH%" a %TIME%
@@ -222,6 +227,7 @@ echo PATCHFILE=[%PATCHFILE%]
 >>"%LOGFILE%" echo CACHE_DIR=%CACHE_DIR%
 >>"%LOGFILE%" echo FILEPREFIX=%FILEPREFIX%
 >>"%LOGFILE%" echo PARAM=%PARAM%
+if defined TRIVY_SWITCH_MSG >>"%LOGFILE%" echo %TRIVY_SWITCH_MSG%
 >>"%LOGFILE%" echo ==========================================================
 
 set "COMMON=--skip-java-db-update --skip-check-update --skip-version-check --disable-telemetry --offline-scan --timeout 30m --cache-dir "%CACHE_DIR%" --skip-files "%TRIVY_DIR%trivy.exe" --skip-files "%TRIVY_DIR%trivy""
@@ -324,3 +330,27 @@ endlocal & exit /b 0
 >>"%GLOBAL_LOG%" echo %TARGET_LABEL% : 7z absent => pas de ZIP
 
 endlocal & exit /b 0
+
+:resolve_trivy_cmd
+setlocal
+set "RESOLVED_TRIVY_CMD=%~1"
+set "RESOLVED_TRIVY_MSG="
+set "RESOLVED_SCAN_PATH=%~2"
+
+if /I "%~1"=="rootfs" (
+  if /I "%RESOLVED_SCAN_PATH:~-2%"=="\." set "RESOLVED_SCAN_PATH=%RESOLVED_SCAN_PATH:~0,-1%"
+  if defined RESOLVED_SCAN_PATH (
+    set "IS_DRIVE_ROOT="
+    if /I "%RESOLVED_SCAN_PATH:~1,2%"==":\" if "%RESOLVED_SCAN_PATH:~3,1%"=="" set "IS_DRIVE_ROOT=1"
+    if not defined IS_DRIVE_ROOT (
+      set "RESOLVED_TRIVY_CMD=filesystem"
+      set "RESOLVED_TRIVY_MSG=INFO: cible \"%~2\" non racine de disque, bascule de rootfs vers filesystem."
+    )
+  )
+)
+
+endlocal & (
+  set "TRIVY_CMD=%RESOLVED_TRIVY_CMD%"
+  set "TRIVY_SWITCH_MSG=%RESOLVED_TRIVY_MSG%"
+)
+exit /b 0
