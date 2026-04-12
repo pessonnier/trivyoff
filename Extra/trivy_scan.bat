@@ -300,11 +300,11 @@ if exist "C:\Program Files\7-Zip\7z.exe" (
     "C:\Program Files\7-Zip\7z.exe" a -tzip "!ARCHIVE_NAME!" "!LOGFILE!" >nul 2>&1
     >>"%GLOBAL_LOG%" echo !TARGET_LABEL! : ZIP OK => !ARCHIVE_NAME!
   ) else (
-    >>"%GLOBAL_LOG%" echo !TARGET_LABEL! : erreur ZIP code=!ZRC!
+  >>"%GLOBAL_LOG%" echo !TARGET_LABEL! : erreur ZIP code=!ZRC!
   )
-) else (
+  ) else (
   >>"!LOGFILE!" echo 7-Zip non trouve -> ZIP non cree
   >>"%GLOBAL_LOG%" echo !TARGET_LABEL! : 7z absent => pas de ZIP
-)
+  )
 
 endlocal & exit /b 0
