@@ -141,12 +141,12 @@ rem ==========================================================
 rem  Si un chemin explicite est fourni, on ne boucle pas sur DRIVES
 rem ==========================================================
 if defined CUSTOM_SCAN_PATH (
-  set "SCAN_PATH=%CUSTOM_SCAN_PATH%"
+  set "SCAN_PATH=!CUSTOM_SCAN_PATH!"
   set "SCAN_LABEL=CUSTOM"
-  if /I "%SCAN_PATH:~1,1%"==":" set "SCAN_LABEL=%SCAN_PATH:~0,1%"
-  echo Scan cible unique force par -c/--chemin : [%SCAN_PATH%]
-  >>"%GLOBAL_LOG%" echo Scan cible unique force par -c/--chemin : [%SCAN_PATH%]
-  call :scan_target "%SCAN_PATH%" "%SCAN_LABEL%"
+  if /I "!SCAN_PATH:~1,1!"==":" set "SCAN_LABEL=!SCAN_PATH:~0,1!"
+  echo Scan cible unique force par -c/--chemin : [!SCAN_PATH!]
+  >>"%GLOBAL_LOG%" echo Scan cible unique force par -c/--chemin : [!SCAN_PATH!]
+  call :scan_target "!SCAN_PATH!" "!SCAN_LABEL!"
   echo.
   echo Operation terminee. Voir %GLOBAL_LOG% et le ZIP genere.
   >>"%GLOBAL_LOG%" echo Operation terminee.
@@ -252,7 +252,7 @@ rem 3) TABLE
 >>"!LOGFILE!" echo CMD="!TRIVY_DIR!trivy.exe" !TRIVY_CMD! !COMMON! %SCANNERS_TABLE% %IMAGE_CONFIG_SCANNERS% !SKIP! !PARAM! --format table --dependency-tree --output "!FILEPREFIX!.config.licence.CVE.txt" "!SCAN_PATH!"
 
 "!TRIVY_DIR!trivy.exe" !TRIVY_CMD! !COMMON! %SCANNERS_TABLE% %IMAGE_CONFIG_SCANNERS% !SKIP! !PARAM! ^
-  --format table --output "!FILEPREFIX!.config.licence.CVE.txt" "!SCAN_PATH!" >>"!LOGFILE!" 2>&1
+  --format table --dependency-tree --output "!FILEPREFIX!.config.licence.CVE.txt" "!SCAN_PATH!" >>"!LOGFILE!" 2>&1
 set "RC3=!ERRORLEVEL!"
 >>"!LOGFILE!" echo RC=!RC3!
 
