@@ -242,6 +242,54 @@ function Copy-OrderedDictionary {
   return $target
 }
 
+function Resolve-ProductName {
+  param($ProductItem)
+
+  if ($ProductItem -is [string]) {
+    return $ProductItem.Trim()
+  }
+
+  if ($ProductItem -is [pscustomobject] -or $ProductItem -is [hashtable]) {
+    foreach ($key in @("slug", "product", "name", "id")) {
+      if ($ProductItem.PSObject.Properties.Name -contains $key) {
+        $value = $ProductItem.$key
+        if ($null -ne $value) {
+          $candidate = [string]$value
+          if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            return $candidate.Trim()
+          }
+        }
+      }
+    }
+  }
+
+  return ""
+}
+
+function Resolve-ProductName {
+  param($ProductItem)
+
+  if ($ProductItem -is [string]) {
+    return $ProductItem.Trim()
+  }
+
+  if ($ProductItem -is [pscustomobject] -or $ProductItem -is [hashtable]) {
+    foreach ($key in @("slug", "product", "name", "id")) {
+      if ($ProductItem.PSObject.Properties.Name -contains $key) {
+        $value = $ProductItem.$key
+        if ($null -ne $value) {
+          $candidate = [string]$value
+          if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+            return $candidate.Trim()
+          }
+        }
+      }
+    }
+  }
+
+  return ""
+}
+
 $ApiBaseUrl = $ApiBaseUrl.TrimEnd('/')
 if ([string]::IsNullOrWhiteSpace($OutputJson)) {
   $OutputJson = [System.IO.Path]::ChangeExtension($OutputCsv, ".json")
