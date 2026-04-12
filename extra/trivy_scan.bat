@@ -104,11 +104,7 @@ if /I "%SCAN_MODE%"=="image" (
   set "SRC=_image"
 )
 
-rem ==========================================================
-rem  IMPORTANT Windows: rootfs => on scanne en "filesystem"
-rem ==========================================================
 set "TRIVY_CMD=%SCAN_MODE%"
-if /I "%SCAN_MODE%"=="rootfs" set "TRIVY_CMD=filesystem"
 
 rem ==========================================================
 rem  Prepare cache dir
@@ -140,7 +136,10 @@ echo PARAM=[%PARAM%]
 rem ==========================================================
 rem  Si un chemin explicite est fourni, on ne boucle pas sur DRIVES
 rem ==========================================================
+rem TODO : une erreur se déclanche qui parle de "set" mais qui semble venir du if car le message DEBUG1 s'affiche mais pas DEBUG2 comment expliquer ce phenomene ?
+echo DEBUG1
 if defined CUSTOM_SCAN_PATH (
+  echo DEBUG2
   set "SCAN_PATH=%CUSTOM_SCAN_PATH%"
   set "SCAN_LABEL=CUSTOM"
   if /I "%SCAN_PATH:~1,1%"==":" set "SCAN_LABEL=%SCAN_PATH:~0,1%"
