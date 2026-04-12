@@ -237,7 +237,7 @@ goto scan_target_after_skip
 
 :scan_target_drive_skip
 set "DRIVE_ROOT=%SCAN_PATH:~0,2%"
-set "SKIP=--skip-dirs "%DRIVE_ROOT%\System Volume Information" --skip-dirs "%DRIVE_ROOT%\$Recycle.Bin" --skip-dirs "%DRIVE_ROOT%\Recovery""
+set "SKIP=--skip-dirs "%DRIVE_ROOT%\Windows" --skip-dirs "%DRIVE_ROOT%\System Volume Information" --skip-dirs "%DRIVE_ROOT%\$Recycle.Bin" --skip-dirs "%DRIVE_ROOT%\Recovery""
 
 :scan_target_after_skip
 
