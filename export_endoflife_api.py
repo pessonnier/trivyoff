@@ -4,19 +4,15 @@ export_endoflife_api_v1.py
 
 Exporte le payload `/products/full` de l'API EndOfLife v1 vers :
 - un JSON brut,
-- un CSV aplati (une ligne par release, avec repetition des attributs produit).
+- un CSV simplifie avec une ligne par release et 21 colonnes fixes.
 
-Le CSV contient des colonnes prefixees pour eviter les collisions :
-- `payload.*` pour les metadonnees de la reponse
-- `product.*` pour les attributs du produit
-- `release.*` pour les attributs de la release
+Colonnes : product, cycle, eol, latest, release_date, latest_release_date, lts,
+extendedSupport, support_date, is_supported, eol_date, is_eol, lts_date,
+is_lts, discontinued_date, is_discontinued, extended_support_date,
+is_extended_support, link, www et discontinued.
 
-Les structures complexes sont conservees dans une colonne JSON compacte et
-aplaties recursivement avec des cles du type `product.identifiers[0].type`
-ou `release.latest.link`.
-
-Si deux chemins ne different que par la casse, un suffixe `__dupN` est ajoute
-pour garantir des en-tetes CSV uniques sur les consommateurs case-insensitive.
+Les champs polymorphes eol, lts et discontinued privilegient la date lorsqu'elle
+existe, sinon leur valeur booleenne.
 """
 
 from __future__ import annotations
@@ -241,10 +237,87 @@ def export_endoflife_full(base_url: str, csv_output: Path, json_output: Path) ->
         else:
             rows.append(dict(base_row))
 
+    def lifecycle_value(date_value: Any, state_value: Any) -> str:
+        normalized_date = _normalize_cell(date_value)
+        return normalized_date if normalized_date else _normalize_cell(state_value)
+
+    def availability_value(end_state_value: Any) -> str:
+        if isinstance(end_state_value, bool):
+            has_ended = end_state_value
+        elif isinstance(end_state_value, str) and end_state_value.casefold() in {"true", "false"}:
+            has_ended = end_state_value.casefold() == "true"
+        else:
+            return ""
+        return "false" if has_ended else "true"
+
+    simple_rows: List[Dict[str, str]] = []
+    for row in rows:
+        eol_date = row.get("release.eolFrom")
+        is_eol = row.get("release.isEol")
+        lts_date = row.get("release.ltsFrom")
+        is_lts = row.get("release.isLts")
+        support_date = row.get("release.eoasFrom")
+        is_end_of_active_support = row.get("release.isEoas")
+        extended_support_date = row.get("release.eoesFrom")
+        is_end_of_extended_support = row.get("release.isEoes")
+        discontinued_date = row.get("release.discontinuedFrom")
+        is_discontinued = row.get("release.isDiscontinued")
+
+        simple_rows.append(
+            {
+                "product": _normalize_cell(row.get("product")),
+                "cycle": _normalize_cell(row.get("release.name")),
+                "eol": lifecycle_value(eol_date, is_eol),
+                "latest": _normalize_cell(row.get("release.latest.name")),
+                "release_date": _normalize_cell(row.get("release.releaseDate")),
+                "latest_release_date": _normalize_cell(row.get("release.latest.date")),
+                "lts": lifecycle_value(lts_date, is_lts),
+                "extendedSupport": (
+                    _normalize_cell(extended_support_date)
+                    if extended_support_date is not None
+                    else availability_value(is_end_of_extended_support)
+                ),
+                "support_date": _normalize_cell(support_date),
+                "is_supported": availability_value(is_end_of_active_support),
+                "eol_date": _normalize_cell(eol_date),
+                "is_eol": _normalize_cell(is_eol),
+                "lts_date": _normalize_cell(lts_date),
+                "is_lts": _normalize_cell(is_lts),
+                "discontinued_date": _normalize_cell(discontinued_date),
+                "is_discontinued": _normalize_cell(is_discontinued),
+                "extended_support_date": _normalize_cell(extended_support_date),
+                "is_extended_support": availability_value(is_end_of_extended_support),
+                "link": _normalize_cell(row.get("release.latest.link")),
+                "www": _normalize_cell(row.get("product.links.html")),
+                "discontinued": lifecycle_value(discontinued_date, is_discontinued),
+            }
+        )
+    rows = simple_rows
+
     csv_output.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["product", "release_index"] + sorted(
-        column for column in dynamic_columns if column not in {"product", "release_index"}
-    )
+    fieldnames = [
+        "product",
+        "cycle",
+        "eol",
+        "latest",
+        "release_date",
+        "latest_release_date",
+        "lts",
+        "extendedSupport",
+        "support_date",
+        "is_supported",
+        "eol_date",
+        "is_eol",
+        "lts_date",
+        "is_lts",
+        "discontinued_date",
+        "is_discontinued",
+        "extended_support_date",
+        "is_extended_support",
+        "link",
+        "www",
+        "discontinued",
+    ]
 
     with csv_output.open("w", encoding="utf-8", newline="") as csv_file:
         writer = csv.DictWriter(
@@ -256,7 +329,7 @@ def export_endoflife_full(base_url: str, csv_output: Path, json_output: Path) ->
         writer.writeheader()
         writer.writerows(rows)
 
-    _log_info(f"[INFO] CSV aplati ecrit: {csv_output}")
+    _log_info(f"[INFO] CSV simplifie ecrit: {csv_output}")
     return len(rows)
 
 

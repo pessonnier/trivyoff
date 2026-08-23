@@ -4,18 +4,15 @@ export_endoflife_api_v1.ps1 - Export complet de l'API EndOfLife v1 (/products/fu
 
 .DESCRIPTION
 Ce script recupere le payload `/products/full`, ecrit le JSON brut et produit
-un CSV aplati avec une ligne par release.
+un CSV simplifie avec une ligne par release.
 
-Les colonnes du CSV sont prefixees pour eviter les collisions :
-- payload.* : metadonnees de la reponse
-- product.* : attributs du produit
-- release.* : attributs de la release
+Colonnes : product, cycle, eol, latest, release_date, latest_release_date, lts,
+extendedSupport, support_date, is_supported, eol_date, is_eol, lts_date,
+is_lts, discontinued_date, is_discontinued, extended_support_date,
+is_extended_support, link, www et discontinued.
 
-Les objets et tableaux sont conserves en JSON compact et aplatits recursivement,
-par exemple `product.identifiers[0].type` ou `release.latest.link`.
-
-Si deux chemins ne different que par la casse, un suffixe `__dupN` est ajoute
-pour garantir des en-tetes CSV uniques sur les consommateurs case-insensitive.
+Les champs polymorphes eol, lts et discontinued privilegient la date lorsqu'elle
+existe, sinon leur valeur booleenne.
 #>
 
 [CmdletBinding()]
@@ -384,12 +381,128 @@ foreach ($productItem in $products) {
 
 Write-Progress -Activity "Export EndOfLife API" -Completed
 
+function Convert-ToSimpleCell {
+  param($Value)
+
+  if ($null -eq $Value) {
+    return ""
+  }
+
+  if ($Value -is [bool]) {
+    return $(if ($Value) { "true" } else { "false" })
+  }
+
+  return [string]$Value
+}
+
+function Get-LifecycleCell {
+  param(
+    $DateValue,
+    $StateValue
+  )
+
+  $dateCell = Convert-ToSimpleCell -Value $DateValue
+  if (-not [string]::IsNullOrWhiteSpace($dateCell)) {
+    return $dateCell
+  }
+
+  return Convert-ToSimpleCell -Value $StateValue
+}
+
+function Get-AvailabilityCell {
+  param($EndStateValue)
+
+  if ($null -eq $EndStateValue) {
+    return ""
+  }
+
+  if ($EndStateValue -is [bool]) {
+    $hasEnded = $EndStateValue
+  }
+  else {
+    $normalized = ([string]$EndStateValue).Trim().ToLowerInvariant()
+    if ($normalized -notin @("true", "false")) {
+      return ""
+    }
+    $hasEnded = [bool]::Parse($normalized)
+  }
+
+  return Convert-ToSimpleCell -Value (-not $hasEnded)
+}
+
+$simpleRows = New-Object System.Collections.Generic.List[object]
+foreach ($row in $rows) {
+  $eolDate = Get-ObjectPropertyValue -Object $row -Name "release.eolFrom"
+  $isEol = Get-ObjectPropertyValue -Object $row -Name "release.isEol"
+  $ltsDate = Get-ObjectPropertyValue -Object $row -Name "release.ltsFrom"
+  $isLts = Get-ObjectPropertyValue -Object $row -Name "release.isLts"
+  $supportDate = Get-ObjectPropertyValue -Object $row -Name "release.eoasFrom"
+  $isEndOfActiveSupport = Get-ObjectPropertyValue -Object $row -Name "release.isEoas"
+  $extendedSupportDate = Get-ObjectPropertyValue -Object $row -Name "release.eoesFrom"
+  $isEndOfExtendedSupport = Get-ObjectPropertyValue -Object $row -Name "release.isEoes"
+  $discontinuedDate = Get-ObjectPropertyValue -Object $row -Name "release.discontinuedFrom"
+  $isDiscontinued = Get-ObjectPropertyValue -Object $row -Name "release.isDiscontinued"
+  $extendedSupport = if ($null -ne $extendedSupportDate) {
+    Convert-ToSimpleCell -Value $extendedSupportDate
+  }
+  else {
+    Get-AvailabilityCell -EndStateValue $isEndOfExtendedSupport
+  }
+
+  $simpleRows.Add([pscustomobject][ordered]@{
+    product                 = Convert-ToSimpleCell -Value (Get-ObjectPropertyValue -Object $row -Name "product")
+    cycle                   = Convert-ToSimpleCell -Value (Get-ObjectPropertyValue -Object $row -Name "release.name")
+    eol                     = Get-LifecycleCell -DateValue $eolDate -StateValue $isEol
+    latest                  = Convert-ToSimpleCell -Value (Get-ObjectPropertyValue -Object $row -Name "release.latest.name")
+    release_date            = Convert-ToSimpleCell -Value (Get-ObjectPropertyValue -Object $row -Name "release.releaseDate")
+    latest_release_date     = Convert-ToSimpleCell -Value (Get-ObjectPropertyValue -Object $row -Name "release.latest.date")
+    lts                     = Get-LifecycleCell -DateValue $ltsDate -StateValue $isLts
+    extendedSupport         = $extendedSupport
+    support_date            = Convert-ToSimpleCell -Value $supportDate
+    is_supported            = Get-AvailabilityCell -EndStateValue $isEndOfActiveSupport
+    eol_date                = Convert-ToSimpleCell -Value $eolDate
+    is_eol                  = Convert-ToSimpleCell -Value $isEol
+    lts_date                = Convert-ToSimpleCell -Value $ltsDate
+    is_lts                  = Convert-ToSimpleCell -Value $isLts
+    discontinued_date       = Convert-ToSimpleCell -Value $discontinuedDate
+    is_discontinued         = Convert-ToSimpleCell -Value $isDiscontinued
+    extended_support_date   = Convert-ToSimpleCell -Value $extendedSupportDate
+    is_extended_support     = Get-AvailabilityCell -EndStateValue $isEndOfExtendedSupport
+    link                    = Convert-ToSimpleCell -Value (Get-ObjectPropertyValue -Object $row -Name "release.latest.link")
+    www                     = Convert-ToSimpleCell -Value (Get-ObjectPropertyValue -Object $row -Name "product.links.html")
+    discontinued            = Get-LifecycleCell -DateValue $discontinuedDate -StateValue $isDiscontinued
+  }) | Out-Null
+}
+$rows = $simpleRows
+
 $outputDir = Split-Path -Parent $OutputCsv
 if (-not [string]::IsNullOrWhiteSpace($outputDir)) {
   New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 }
 
-$finalColumns = @("product", "release_index") + @($dynamicColumns | Where-Object { $_ -notin @("product", "release_index") } | Sort-Object)
+$finalColumns = @(
+  "product",
+  "cycle",
+  "eol",
+  "latest",
+  "release_date",
+  "latest_release_date",
+  "lts",
+  "extendedSupport",
+  "support_date",
+  "is_supported",
+  "eol_date",
+  "is_eol",
+  "lts_date",
+  "is_lts",
+  "discontinued_date",
+  "is_discontinued",
+  "extended_support_date",
+  "is_extended_support",
+  "link",
+  "www",
+  "discontinued"
+)
 
 if ($rows.Count -gt 0) {
   $csvLines = $rows |
@@ -401,5 +514,5 @@ else {
   [System.IO.File]::WriteAllText($OutputCsv, (($finalColumns -join ",") + [Environment]::NewLine), [System.Text.UTF8Encoding]::new($true))
 }
 
-Write-Host "[INFO] CSV aplati ecrit: $OutputCsv"
+Write-Host "[INFO] CSV simplifie ecrit: $OutputCsv"
 Write-Host "Export termine: $OutputCsv ($($rows.Count) lignes). JSON: $OutputJson"

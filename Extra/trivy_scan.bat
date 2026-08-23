@@ -2,7 +2,7 @@
 setlocal EnableExtensions DisableDelayedExpansion
 
 rem ==========================================================
-rem  Trivy scan wrapper - v1.3.2
+rem  Trivy scan wrapper - v1.3.5
 rem
 rem  Documentation des fonctionnalites
 rem  ---------------------------------
@@ -12,7 +12,9 @@ rem       * CycloneDX JSON
 rem       * JSON detaille
 rem       * TABLE texte
 rem       * CSV d'historique des patchs Windows (PowerShell)
-rem     - Regroupe les sorties dans une archive ZIP (1 ZIP par cible scannee).
+rem       * TXT des produits installes Windows (une fois par execution)
+rem     - Regroupe les sorties dans une archive ZIP par cible avec 7-Zip,
+rem       ou avec Compress-Archive si 7-Zip n'est pas disponible.
 rem
 rem  2) Parametres supportes
 rem     -p, --projet <nom>    : nom de projet pour le prefixe des fichiers.
@@ -38,7 +40,7 @@ rem       pour eviter les problemes de parsing de chemin.
 rem ==========================================================
 
 chcp 65001 >nul
-set "VERSION=1.3.2"
+set "VERSION=1.3.5"
 
 rem --- Timestamp (YYYYMMDD_HHMMSS) sans espaces
 set "LDT="
@@ -94,8 +96,8 @@ if /I "%SCAN_MODE%"=="fs" (
 )
 
 if /I "%SCAN_MODE%"=="k8s" (
-  set "SCANNERS=--scanners misconfig,license"
-  set "SCANNERS_TABLE=--scanners misconfig,license"
+  set "SCANNERS=--scanners misconfig,secret,license"
+  set "SCANNERS_TABLE=--scanners misconfig,secret,license"
   set "SRC=_k8s"
 )
 
@@ -111,21 +113,48 @@ rem  Commande Trivy resolue par cible dans :scan_target
 rem ==========================================================
 set "TRIVY_CMD=auto"
 
+set "GLOBAL_LOG=%PROJECT_NAME%.%DT%.%HN%.trivy_scan.global.log"
+set "PRODUCTS_TXT=%PROJECT_NAME%_%HN%.%DT%.installed_products.txt"
+
 rem ==========================================================
-rem  Prepare cache dir
+rem  Le cache offline doit avoir ete prepare avant le scan
 rem ==========================================================
-if not exist "%CACHE_DIR%" mkdir "%CACHE_DIR%" >nul 2>&1
+if not exist "%CACHE_DIR%\" (
+  echo ERREUR : le dossier de cache Trivy est introuvable : "%CACHE_DIR%"
+  >>"%GLOBAL_LOG%" echo ERREUR : le dossier de cache Trivy est introuvable : "%CACHE_DIR%"
+  exit /b 1
+)
+
+rem ==========================================================
+rem  Resolution de 7-Zip : dossier du script, installations
+rem  standards, puis PATH. Compress-Archive sert de secours.
+rem ==========================================================
+set "SEVENZIP_CMD="
+if exist "%TRIVY_DIR%7z.exe" set "SEVENZIP_CMD=%TRIVY_DIR%7z.exe"
+if not defined SEVENZIP_CMD if exist "%TRIVY_DIR%7zz.exe" set "SEVENZIP_CMD=%TRIVY_DIR%7zz.exe"
+if not defined SEVENZIP_CMD if exist "%TRIVY_DIR%7za.exe" set "SEVENZIP_CMD=%TRIVY_DIR%7za.exe"
+if not defined SEVENZIP_CMD if exist "%ProgramFiles%\7-Zip\7z.exe" set "SEVENZIP_CMD=%ProgramFiles%\7-Zip\7z.exe"
+if not defined SEVENZIP_CMD if exist "%ProgramFiles(x86)%\7-Zip\7z.exe" set "SEVENZIP_CMD=%ProgramFiles(x86)%\7-Zip\7z.exe"
+if not defined SEVENZIP_CMD for /f "delims=" %%I in ('where 7z.exe 2^>nul') do if not defined SEVENZIP_CMD set "SEVENZIP_CMD=%%~fI"
+if not defined SEVENZIP_CMD for /f "delims=" %%I in ('where 7zz.exe 2^>nul') do if not defined SEVENZIP_CMD set "SEVENZIP_CMD=%%~fI"
+if not defined SEVENZIP_CMD for /f "delims=" %%I in ('where 7za.exe 2^>nul') do if not defined SEVENZIP_CMD set "SEVENZIP_CMD=%%~fI"
+
+if defined SEVENZIP_CMD (
+  set "ARCHIVE_METHOD=7-Zip [%SEVENZIP_CMD%]"
+) else (
+  set "ARCHIVE_METHOD=PowerShell Compress-Archive"
+)
 
 rem ==========================================================
 rem  Global log (résumé)
 rem ==========================================================
-set "GLOBAL_LOG=%PROJECT_NAME%.%DT%.%HN%.trivy_scan.global.log"
-
 >>"%GLOBAL_LOG%" echo ==========================================================
 >>"%GLOBAL_LOG%" echo Trivy wrapper version %VERSION%
 >>"%GLOBAL_LOG%" echo DateTime=%DT% Host=%HN%
 >>"%GLOBAL_LOG%" echo TRIVY_DIR=%TRIVY_DIR%
 >>"%GLOBAL_LOG%" echo CACHE_DIR=%CACHE_DIR%
+>>"%GLOBAL_LOG%" echo ARCHIVE_METHOD=%ARCHIVE_METHOD%
+>>"%GLOBAL_LOG%" echo PRODUCTS_TXT=%PRODUCTS_TXT%
 >>"%GLOBAL_LOG%" echo SCAN_MODE=%SCAN_MODE%  TRIVY_CMD=%TRIVY_CMD% ^(resolved per target^)
 >>"%GLOBAL_LOG%" echo PARAM=%PARAM%
 >>"%GLOBAL_LOG%" echo ==========================================================
@@ -135,8 +164,12 @@ echo DateTime=%DT% Host=%HN%
 echo TRIVY_DIR=[%TRIVY_DIR%]
 echo CACHE_DIR=[%CACHE_DIR%]
 echo SCAN_MODE=[%SCAN_MODE%]
+echo ARCHIVE_METHOD=[%ARCHIVE_METHOD%]
+echo PRODUCTS_TXT=[%PRODUCTS_TXT%]
 echo CUSTOM_SCAN_PATH=[%CUSTOM_SCAN_PATH%]
 echo PARAM=[%PARAM%]
+
+call :export_installed_products
 
 rem ==========================================================
 rem  Si un chemin explicite est fourni, on ne boucle pas sur DRIVES
@@ -166,6 +199,7 @@ for %%D in (%DRIVES%) do (
 echo.
 echo Operation terminee. Voir %GLOBAL_LOG% et les ZIP par disque.
 >>"%GLOBAL_LOG%" echo Operation terminee.
+call :refresh_global_log_in_archives
 goto :eof
 
 :custom_scan
@@ -178,6 +212,7 @@ call :scan_target "%SCAN_PATH%" "%SCAN_LABEL%"
 echo.
 echo Operation terminee. Voir %GLOBAL_LOG% et le ZIP genere.
 >>"%GLOBAL_LOG%" echo Operation terminee.
+call :refresh_global_log_in_archives
 goto :eof
 
 :no_drives
@@ -215,6 +250,7 @@ echo LOGFILE=[%LOGFILE%]
 echo FILEPREFIX=[%FILEPREFIX%]
 echo ARCHIVE_NAME=[%ARCHIVE_NAME%]
 echo PATCHFILE=[%PATCHFILE%]
+echo PRODUCTS_TXT=[%PRODUCTS_TXT%]
 if defined TRIVY_SWITCH_MSG echo %TRIVY_SWITCH_MSG%
 
 >>"%GLOBAL_LOG%" echo --- Cible %TARGET_LABEL% --- LOG=%LOGFILE% ZIP=%ARCHIVE_NAME%
@@ -300,35 +336,83 @@ endlocal & exit /b 0
 
 rem ZIP
 :scan_target_zip
-if not exist "C:\Program Files\7-Zip\7z.exe" goto scan_target_no_zip_tool
-"C:\Program Files\7-Zip\7z.exe" a -tzip "%ARCHIVE_NAME%" ^
-  "%FILEPREFIX%.cyclonedx.json" ^
-  "%FILEPREFIX%.json" ^
-  "%FILEPREFIX%.config.licence.CVE.txt" ^
-  "%PATCHFILE%" >>"%LOGFILE%" 2>&1
+set "ARCHIVE_FILE_CDX=%FILEPREFIX%.cyclonedx.json"
+set "ARCHIVE_FILE_JSON=%FILEPREFIX%.json"
+set "ARCHIVE_FILE_TABLE=%FILEPREFIX%.config.licence.CVE.txt"
+set "ARCHIVE_FILE_PATCH=%PATCHFILE%"
+set "ARCHIVE_FILE_PRODUCTS=%PRODUCTS_TXT%"
+set "ARCHIVE_FILE_TARGET_LOG=%LOGFILE%"
+set "ARCHIVE_FILE_GLOBAL_LOG=%GLOBAL_LOG%"
+set "ARCHIVE_OUTPUT=%ARCHIVE_NAME%"
 
+if defined SEVENZIP_CMD goto scan_target_zip_7zip
+
+rem Secours natif Windows
+powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; try { $files = @($env:ARCHIVE_FILE_CDX, $env:ARCHIVE_FILE_JSON, $env:ARCHIVE_FILE_TABLE, $env:ARCHIVE_FILE_PATCH, $env:ARCHIVE_FILE_PRODUCTS, $env:ARCHIVE_FILE_TARGET_LOG, $env:ARCHIVE_FILE_GLOBAL_LOG); $existing = @($files | Where-Object { $_ -and (Test-Path -LiteralPath $_) }); Compress-Archive -LiteralPath $existing -DestinationPath $env:ARCHIVE_OUTPUT -Force; exit 0 } catch { exit 1 }" >nul 2>&1
 set "ZRC=%ERRORLEVEL%"
->>"%LOGFILE%" echo ZIP_RC=%ZRC%
+goto scan_target_zip_result
 
+:scan_target_zip_7zip
+set "ZRC=0"
+call :archive_add_7zip "%ARCHIVE_NAME%" "%ARCHIVE_FILE_CDX%"
+if errorlevel 1 set "ZRC=1"
+call :archive_add_7zip "%ARCHIVE_NAME%" "%ARCHIVE_FILE_JSON%"
+if errorlevel 1 set "ZRC=1"
+call :archive_add_7zip "%ARCHIVE_NAME%" "%ARCHIVE_FILE_TABLE%"
+if errorlevel 1 set "ZRC=1"
+call :archive_add_7zip "%ARCHIVE_NAME%" "%ARCHIVE_FILE_PATCH%"
+if errorlevel 1 set "ZRC=1"
+call :archive_add_7zip "%ARCHIVE_NAME%" "%ARCHIVE_FILE_PRODUCTS%"
+if errorlevel 1 set "ZRC=1"
+call :archive_add_7zip "%ARCHIVE_NAME%" "%ARCHIVE_FILE_TARGET_LOG%"
+if errorlevel 1 set "ZRC=1"
+call :archive_add_7zip "%ARCHIVE_NAME%" "%ARCHIVE_FILE_GLOBAL_LOG%"
+if errorlevel 1 set "ZRC=1"
+
+:scan_target_zip_result
+>>"%LOGFILE%" echo ZIP_RC=%ZRC% METHOD=%ARCHIVE_METHOD%
 if not "%ZRC%"=="0" goto scan_target_zip_error
-"C:\Program Files\7-Zip\7z.exe" a -tzip "%ARCHIVE_NAME%" "%LOGFILE%" >nul 2>&1
->>"%GLOBAL_LOG%" echo %TARGET_LABEL% : ZIP OK => %ARCHIVE_NAME%
+>>"%GLOBAL_LOG%" echo %TARGET_LABEL% : ZIP OK ^(%ARCHIVE_METHOD%^) => %ARCHIVE_NAME%
 endlocal & exit /b 0
 
 :scan_target_zip_error
->>"%GLOBAL_LOG%" echo %TARGET_LABEL% : erreur ZIP code=%ZRC%
+>>"%GLOBAL_LOG%" echo %TARGET_LABEL% : erreur ZIP code=%ZRC% methode=%ARCHIVE_METHOD%
 endlocal & exit /b 0
 
-:scan_target_no_zip_tool
->>"%LOGFILE%" echo 7-Zip non trouve -> ZIP non cree
->>"%LOGFILE%" echo Fichiers a zipper manuellement :
->>"%LOGFILE%" echo   - %FILEPREFIX%.cyclonedx.json
->>"%LOGFILE%" echo   - %FILEPREFIX%.json
->>"%LOGFILE%" echo   - %FILEPREFIX%.config.licence.CVE.txt
->>"%LOGFILE%" echo   - %PATCHFILE%
->>"%LOGFILE%" echo   - %LOGFILE%
->>"%GLOBAL_LOG%" echo %TARGET_LABEL% : 7z absent => pas de ZIP
+:archive_add_7zip
+if not exist "%~2" exit /b 0
+"%SEVENZIP_CMD%" a -tzip "%~1" "%~2" >nul 2>&1
+exit /b %ERRORLEVEL%
 
+:export_installed_products
+>>"%GLOBAL_LOG%" echo ---- WINDOWS INSTALLED PRODUCTS TXT ----
+if exist "%TRIVY_DIR%list_installed_products.bat" goto export_installed_products_run
+>"%PRODUCTS_TXT%" echo list_installed_products.bat not found in %TRIVY_DIR%
+>>"%GLOBAL_LOG%" echo PRODUCTS_RC=0 ^(skipped: list_installed_products.bat not found^)
+exit /b 0
+
+:export_installed_products_run
+>>"%GLOBAL_LOG%" echo CMD="%TRIVY_DIR%list_installed_products.bat" --stdout-only ^> "%PRODUCTS_TXT%"
+call "%TRIVY_DIR%list_installed_products.bat" --stdout-only >"%PRODUCTS_TXT%" 2>>"%GLOBAL_LOG%"
+set "PRODUCTS_RC=%ERRORLEVEL%"
+>>"%GLOBAL_LOG%" echo PRODUCTS_RC=%PRODUCTS_RC%
+if "%PRODUCTS_RC%"=="0" exit /b 0
+>"%PRODUCTS_TXT%" echo Installed products export failed. See %GLOBAL_LOG% for details.
+exit /b 0
+
+:refresh_global_log_in_archives
+setlocal DisableDelayedExpansion
+set "REFRESH_GLOBAL_LOG=%GLOBAL_LOG%"
+for %%Z in ("%PROJECT_NAME%%SRC%_%DT%_%HN%_*.zip") do (
+  if exist "%%~fZ" (
+    if defined SEVENZIP_CMD (
+      "%SEVENZIP_CMD%" a -tzip "%%~fZ" "%GLOBAL_LOG%" >nul 2>&1
+    ) else (
+      set "REFRESH_ARCHIVE=%%~fZ"
+      powershell -NoProfile -Command "$ErrorActionPreference = 'Stop'; try { Compress-Archive -LiteralPath $env:REFRESH_GLOBAL_LOG -DestinationPath $env:REFRESH_ARCHIVE -Update; exit 0 } catch { exit 1 }" >nul 2>&1
+    )
+  )
+)
 endlocal & exit /b 0
 
 :resolve_trivy_cmd

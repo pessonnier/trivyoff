@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.2.2"
+VERSION="1.3.5"
 # Récupération de la date actuelle au format YYYYMMDD
 DT=$(date +%Y%m%d_%H%M%S)
 
@@ -19,6 +19,7 @@ PARAM=""
 # Le chemin absolu vers le script trivy
 SCRIPT_PATH=$(realpath "$0")
 TRIVY_DIR=$(dirname "$SCRIPT_PATH")
+CACHE_DIR="${TRIVY_DIR}/cache"
 
 # Traitement des arguments
 while [[ $# -gt 0 ]]
@@ -31,7 +32,7 @@ do
       shift
       shift
       ;;
-    -c|--path) # par défaut /, si -m fs alors idiquez le chemin des sources du projet
+    -c|--chemin) # par défaut /, si -m fs alors indiquez le chemin des sources du projet
       SCAN_PATH="$2"
       shift
       shift
@@ -50,7 +51,7 @@ do
 done
 
 SCANNERS="--scanners license"
-SCANNERS_TABLE="--scanners misconfig,license"
+SCANNERS_TABLE="--scanners license"
 SRC=""
 IMAGE_CONFIG_SCANNERS=""
 
@@ -78,8 +79,8 @@ fi
 if [ "$SCAN_MODE" == "image" ];
 then
    SCANNERS="--scanners license"
-   SCANNERS_TABLE="--scanners misconfig,license"
-   IMAGE_CONFIG_SCANNERS="--image-config-scanners misconfig"
+   SCANNERS_TABLE="--scanners license"
+   IMAGE_CONFIG_SCANNERS=""
    SRC="_image"
 fi
 
@@ -87,10 +88,16 @@ fi
 LOGFILE="${PROJECT_NAME}.${DT}.trivy_scan.log"
 FILEPREFIX="${PROJECT_NAME}_${HN}.${DT}.${SCAN_MODE}"
 ARCHIVE_NAME="${PROJECT_NAME}${SRC}_${DT}_${HN}.tar.gz"
+TRIVY_FAILURES=0
+
+if [ ! -d "${CACHE_DIR}" ]; then
+  echo "Erreur : le dossier de cache Trivy est introuvable : ${CACHE_DIR}" | tee -a "${LOGFILE}" >&2
+  exit 1
+fi
 
 # Redirection de la sortie vers le fichier journal
 echo "Début de l'analyse Trivy sur ${SCAN_PATH} à $(date +%T) depuis ${TRIVY_DIR}" | tee -a ${LOGFILE}
-echo "version ${VERSION} paramètres ${SCAN_MODE} ${SCANNERS} ${PARAM}" | tee -a ${LOGFILE}
+echo "version ${VERSION} paramètres ${SCAN_MODE} ${SCANNERS} ${PARAM}, cache ${CACHE_DIR}" | tee -a ${LOGFILE}
 
 # Dernière mise à jour des paquets
 if command -v dnf &> /dev/null; then
@@ -113,30 +120,54 @@ fi
 # A FAIRE : supp --skip-policy-update et vérifier
 echo "Commande Trivy CycloneDX : ${TRIVY_DIR}/trivy ${SCAN_MODE} --skip-java-db-update --skip-check-update --skip-version-check --disable-telemetry --offline-scan --timeout 10m --skip-files ${TRIVY_DIR}/trivy.exe --skip-files ${TRIVY_DIR}/trivy --cache-dir ${TRIVY_DIR}/cache ${SCANNERS} ${IMAGE_CONFIG_SCANNERS} ${PARAM} --format cyclonedx --output ${FILEPREFIX}.cyclonedx.json ${SCAN_PATH}" | tee -a ${LOGFILE}
 ${TRIVY_DIR}/trivy ${SCAN_MODE} --skip-java-db-update --skip-check-update --skip-version-check --disable-telemetry --offline-scan --timeout 10m --skip-files ${TRIVY_DIR}/trivy.exe --skip-files ${TRIVY_DIR}/trivy --cache-dir ${TRIVY_DIR}/cache ${SCANNERS} ${IMAGE_CONFIG_SCANNERS} ${PARAM} --format cyclonedx --output ${FILEPREFIX}.cyclonedx.json ${SCAN_PATH} >> ${LOGFILE} 2>&1
-if [ $? -ne 0 ]; then
+RC_CYCLONEDX=$?
+if [ ${RC_CYCLONEDX} -ne 0 ]; then
   echo "Erreur lors de la génération du CycloneDX. Consultez le fichier journal pour plus de détails." | tee -a ${LOGFILE}
-  exit 1
+  TRIVY_FAILURES=$((TRIVY_FAILURES + 1))
+else
+  echo "Génération du CycloneDX terminée" | tee -a ${LOGFILE}
 fi
-echo "Génération du CycloneDX terminée" | tee -a ${LOGFILE}
 
 # Analyse de la liste des paquets en JSON
 echo "Commande Trivy JSON : ${TRIVY_DIR}/trivy ${SCAN_MODE} --skip-java-db-update --skip-check-update --skip-version-check --disable-telemetry --offline-scan --timeout 10m --skip-files ${TRIVY_DIR}/trivy.exe --skip-files ${TRIVY_DIR}/trivy --cache-dir ${TRIVY_DIR}/cache ${SCANNERS_TABLE} ${IMAGE_CONFIG_SCANNERS} ${PARAM} --list-all-pkgs --format json --output ${FILEPREFIX}.json ${SCAN_PATH}" | tee -a ${LOGFILE}
 ${TRIVY_DIR}/trivy ${SCAN_MODE} --skip-java-db-update --skip-check-update --skip-version-check --disable-telemetry --offline-scan --timeout 10m --skip-files ${TRIVY_DIR}/trivy.exe --skip-files ${TRIVY_DIR}/trivy --cache-dir ${TRIVY_DIR}/cache ${SCANNERS_TABLE} ${IMAGE_CONFIG_SCANNERS} ${PARAM} --list-all-pkgs --format json --output ${FILEPREFIX}.json ${SCAN_PATH} >> ${LOGFILE} 2>&1
-if [ $? -ne 0 ]; then
+RC_JSON=$?
+if [ ${RC_JSON} -ne 0 ]; then
   echo "Erreur lors de la génération du format Trivy. Consultez le fichier journal pour plus de détails." | tee -a ${LOGFILE}
-  exit 1
+  TRIVY_FAILURES=$((TRIVY_FAILURES + 1))
+else
+  echo "Génération du format Trivy terminée" | tee -a ${LOGFILE}
 fi
-echo "Génération du format Trivy terminée" | tee -a ${LOGFILE}
 
 # Analyse de configuration, des licences et des CVE au format tableau
 echo "Commande Trivy Tableau : ${TRIVY_DIR}/trivy ${SCAN_MODE} --skip-java-db-update --skip-check-update --skip-version-check --disable-telemetry --offline-scan --timeout 10m --skip-files ${TRIVY_DIR}/trivy.exe --skip-files ${TRIVY_DIR}/trivy --cache-dir ${TRIVY_DIR}/cache ${SCANNERS_TABLE} ${IMAGE_CONFIG_SCANNERS} ${PARAM} --format table --dependency-tree --output ${FILEPREFIX}.config.licence.CVE.txt ${SCAN_PATH}" | tee -a ${LOGFILE}
 ${TRIVY_DIR}/trivy ${SCAN_MODE} --skip-java-db-update --skip-check-update --skip-version-check --disable-telemetry --offline-scan --timeout 10m --skip-files ${TRIVY_DIR}/trivy.exe --skip-files ${TRIVY_DIR}/trivy --cache-dir ${TRIVY_DIR}/cache ${SCANNERS_TABLE} ${IMAGE_CONFIG_SCANNERS} ${PARAM} --format table --dependency-tree --output ${FILEPREFIX}.config.licence.CVE.txt ${SCAN_PATH} >> ${LOGFILE} 2>&1
-if [ $? -ne 0 ]; then
+RC_TABLE=$?
+if [ ${RC_TABLE} -ne 0 ]; then
   echo "Erreur lors de la génération des défauts de configuration, du tableau des CVE et des licences. Consultez le fichier journal pour plus de détails." | tee -a ${LOGFILE}
-  exit 1
+  TRIVY_FAILURES=$((TRIVY_FAILURES + 1))
+else
+  echo "Génération des défauts de configuration, du tableau des CVE et des licences terminée" | tee -a ${LOGFILE}
 fi
-echo "Génération des défauts de configuration, du tableau des CVE et des licences terminée" | tee -a ${LOGFILE}
 
-# Création de l'archive TAR.GZ
-tar -czf ${ARCHIVE_NAME} ${FILEPREFIX}.* ${LOGFILE}
-echo "Archive TAR.GZ créée : $ARCHIVE_NAME" | tee -a ${LOGFILE}
+# Création de l'archive TAR.GZ si au moins une sortie Trivy existe
+TRIVY_OUTPUTS=()
+for OUTPUT_FILE in "${FILEPREFIX}.cyclonedx.json" "${FILEPREFIX}.json" "${FILEPREFIX}.config.licence.CVE.txt"; do
+  if [ -f "${OUTPUT_FILE}" ]; then
+    TRIVY_OUTPUTS+=("${OUTPUT_FILE}")
+  fi
+done
+
+if [ ${#TRIVY_OUTPUTS[@]} -gt 0 ]; then
+  if tar -czf "${ARCHIVE_NAME}" "${TRIVY_OUTPUTS[@]}" "${LOGFILE}"; then
+    echo "Archive TAR.GZ créée : ${ARCHIVE_NAME}" | tee -a "${LOGFILE}"
+  else
+    echo "Erreur lors de la création de l'archive TAR.GZ." | tee -a "${LOGFILE}"
+  fi
+else
+  echo "Aucun fichier de sortie Trivy généré : archive TAR.GZ non créée." | tee -a "${LOGFILE}"
+fi
+
+if [ ${TRIVY_FAILURES} -gt 0 ]; then
+  echo "Analyse terminée avec ${TRIVY_FAILURES} commande(s) Trivy en échec." | tee -a "${LOGFILE}"
+fi
